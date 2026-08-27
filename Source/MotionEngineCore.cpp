@@ -112,7 +112,7 @@ std::array<juce::String, 4> MotionEngineCore::controlNamesForModel(const int mod
 {
     switch (model)
     {
-        case 0: return { "Orbit Speed", "Central Pull", "Ellipticity", "Precession" };
+        case 0: return { "Orbit Speed", "Orbit Pull", "Ellipticity", "Precession" };
         case 1: return { "Tension", "Damping", "Swirl", "Anchor Offset" };
         case 2: return { "Length", "Gravity", "Damping", "Drive" };
         case 3: return { "Activity", "Inertia", "Correlation", "Bias" };
@@ -214,7 +214,7 @@ void MotionEngineCore::resetForModel(const int model)
 
     switch (lastModel)
     {
-        case 0: x = 0.62; y = 0.0; vx = 0.0; vy = 1.1; break;
+        case 0: x = 0.62; y = 0.0; vx = 0.0; vy = 0.9; break;
         case 1: x = 0.72; y = -0.18; break;
         case 2: pendulumAngle = 0.72; x = 0.5; y = -0.55; break;
         case 3: x = 0.0; y = 0.0; break;
@@ -266,6 +266,18 @@ void MotionEngineCore::step(const double dt)
         const double direction = std::atan2(y, x) + 0.62;
         switch (model)
         {
+            case 0:
+            {
+                const double radius = juce::jmax(0.08, std::hypot(x, y));
+                const double nx = x / radius;
+                const double ny = y / radius;
+                const double tx = -ny;
+                const double ty = nx;
+                const double force = 0.22 + 0.65 * energy;
+                vx += nx * force + tx * force * 0.18;
+                vy += ny * force + ty * force * 0.18;
+                break;
+            }
             case 2: pendulumVelocity += (1.4 + 5.0 * a) * energy; break;
             case 7:
             {
@@ -298,20 +310,61 @@ void MotionEngineCore::step(const double dt)
     {
         case 0: // Orbit
         {
-            const double pull = 1.0 + b * 10.0;
-            const double ellipse = 0.55 + c * 1.3;
-            const double radius = juce::jmax(0.08, std::hypot(x, y));
-            const double tx = -y / radius;
-            const double ty = x / radius;
-            const double targetSpeed = 0.25 + a * 2.8;
-            const double currentTangential = vx * tx + vy * ty;
-            const double drive = (targetSpeed - currentTangential) * (1.4 + pull * 0.25);
-            const double precession = (d - 0.5) * 1.8;
-            vx += (-x * pull + tx * drive - y * precession) * dt;
-            vy += (-y * pull / (ellipse * ellipse) + ty * drive + x * precession) * dt;
+            // Orbit is a smooth path-following physical system rather than a
+            // generic central-force hack. Ellipticity defines the orbit shape
+            // explicitly, while velocity and disturbances are still real state.
+            constexpr double targetRadius = 0.62;
+            const double aspect = 1.0 - c * 0.55; // 1.0 = circle, 0.45 = strong ellipse
+            const double precessionRate = d * 0.14; // 0 = fixed axis
+            const double orientation = elapsed * precessionRate;
+            const double co = std::cos(orientation);
+            const double so = std::sin(orientation);
+
+            // Transform into the slowly rotating ellipse frame.
+            const double lx = co * x + so * y;
+            const double ly = -so * x + co * y;
+            const double lvx = co * vx + so * vy;
+            const double lvy = -so * vx + co * vy;
+
+            // Ellipse-space radius. Scaling Y by aspect makes the target ellipse
+            // become a circle in this metric, so radial correction stays smooth.
+            const double qx = lx;
+            const double qy = ly / aspect;
+            const double ellipseRadius = juce::jmax(1.0e-5, std::hypot(qx, qy));
+
+            // Gradient of the ellipse metric gives the local outward normal.
+            double rx = qx / ellipseRadius;
+            double ry = qy / (ellipseRadius * aspect);
+            const double normalLength = juce::jmax(1.0e-5, std::hypot(rx, ry));
+            rx /= normalLength;
+            ry /= normalLength;
+            const double tx = -ry;
+            const double ty = rx;
+
+            const double radialVelocity = lvx * rx + lvy * ry;
+            const double tangentialVelocity = lvx * tx + lvy * ty;
+            const double radialError = ellipseRadius - targetRadius;
+
+            const double pull = 1.4 + b * 13.0;
+            const double radialDamping = 1.2 + b * 4.2;
+            const double targetSpeed = 0.22 + a * 1.65;
+            const double tangentDrive = 1.25 + b * 1.8;
+
+            const double radialAcceleration = -pull * radialError - radialDamping * radialVelocity;
+            const double tangentAcceleration = (targetSpeed - tangentialVelocity) * tangentDrive;
+            const double lax = rx * radialAcceleration + tx * tangentAcceleration;
+            const double lay = ry * radialAcceleration + ty * tangentAcceleration;
+
+            // Rotate acceleration back to world coordinates and integrate normally,
+            // preserving mouse throws, HIT impulses, and other disturbances.
+            vx += (co * lax - so * lay) * dt;
+            vy += (so * lax + co * lay) * dt;
             x += vx * dt;
             y += vy * dt;
-            containBody(true, 0.88, 0.0);
+
+            // The nominal orbit lives well inside the world. This only catches
+            // deliberate hard throws instead of shaping the orbit itself.
+            containBody(true, 0.52, 0.0);
             break;
         }
 
