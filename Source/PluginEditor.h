@@ -65,7 +65,7 @@ private:
     juce::ComboBox curveBox;
     juce::Slider smoothSlider;
     juce::TextButton mapButton { "MAP" };
-    juce::TextButton clearButton { "×" };
+    juce::TextButton clearButton { "X" };
     juce::Label targetLabel;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> sourceAttachment;
