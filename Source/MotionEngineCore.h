@@ -39,7 +39,7 @@ public:
     Snapshot getSnapshot() const;
     std::array<float, kNumOutputs> getOutputs() const;
 
-    void triggerHit();
+    void triggerHit(float strength = 1.0f);
     void beginDrag(float x, float y);
     void dragTo(float x, float y);
     void endDrag(float velocityX, float velocityY);
@@ -91,6 +91,7 @@ private:
     std::array<double, kNumOutputs> smoothedOutputs { 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5 };
 
     std::atomic<bool> hitPending { false };
+    std::atomic<float> pendingHitStrength { 1.0f };
     std::atomic<bool> dragging { false };
     std::atomic<float> dragX { 0.0f };
     std::atomic<float> dragY { 0.0f };
