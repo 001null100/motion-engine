@@ -45,7 +45,7 @@ MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineA
     mapButton.onClick = [this] { processor.getBridge().requestMap(); };
     unmapButton.onClick = [this] { processor.getBridge().requestUnmap(); };
 
-    instructionLabel.setText("Plugin targets: touch/click the parameter first, then MAP TARGET.  Native Bitwig targets: press MAP TARGET, then hover the parameter.", juce::dontSendNotification);
+    instructionLabel.setText("Press MAP TARGET, then actually move/drag the parameter you want. Hovering alone will not map. UNMAP also restores Bitwig automation control.", juce::dontSendNotification);
     instructionLabel.setColour(juce::Label::textColourId, juce::Colour(0xff8d96a5));
     instructionLabel.setJustificationType(juce::Justification::centredLeft);
 
@@ -112,7 +112,7 @@ void MotionEngineAudioProcessorEditor::timerCallback()
 {
     const auto s = processor.getBridge().getStatus();
     const juce::String bridgeText = s.bridgeSeen ? "Bridge online" : "Bridge not seen";
-    const juce::String mappingText = s.mapped ? "mapped" : (s.armed ? "waiting for target" : "unmapped");
+    const juce::String mappingText = s.mapped ? "mapped" : (s.armed ? "waiting for parameter movement" : "unmapped");
 
     targetLabel.setText(bridgeText + "  |  " + mappingText + "  |  Target: " + s.targetName,
                         juce::dontSendNotification);
