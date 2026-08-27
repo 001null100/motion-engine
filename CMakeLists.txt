@@ -28,9 +28,9 @@ juce_add_plugin(MotionEngine
     PLUGIN_CODE MoEn
     FORMATS VST3
     PRODUCT_NAME "Motion Engine"
-    DESCRIPTION "Physics modulation bridge prototype"
+    DESCRIPTION "Physics-driven modulation engine"
     IS_SYNTH FALSE
-    NEEDS_MIDI_INPUT FALSE
+    NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
@@ -46,6 +46,8 @@ target_sources(MotionEngine PRIVATE
     Source/PluginEditor.h
     Source/BridgeEngine.cpp
     Source/BridgeEngine.h
+    Source/MotionEngineCore.cpp
+    Source/MotionEngineCore.h
 )
 
 target_compile_definitions(MotionEngine PUBLIC
