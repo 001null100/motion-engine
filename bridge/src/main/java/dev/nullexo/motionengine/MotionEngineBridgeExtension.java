@@ -19,6 +19,8 @@ import com.bitwig.extension.controller.api.Parameter;
 public final class MotionEngineBridgeExtension extends ControllerExtension
 {
     private static final int PORT = 19782;
+    private static final double MAP_CHANGE_EPSILON = 1.0 / 65536.0;
+    private static final int MAP_CANDIDATE_SETTLE_TICKS = 2;
 
     private LastClickedParameter lastClicked;
     private Parameter target;
@@ -42,6 +44,15 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
     private DatagramSocket socket;
     private long appliedSequence = -1;
     private long lastApplyNanos = 0;
+
+    // LastClickedParameter is a hover tracker for native Bitwig controls. There is no
+    // separate public "clicked/touched" event, so mapping is inferred from an actual
+    // value change after a candidate has remained stable briefly. Merely hovering a
+    // parameter therefore never maps it.
+    private boolean mapCandidateActive = false;
+    private String mapCandidateName = "";
+    private double mapCandidateValue = 0.0;
+    private int mapCandidateSettleTicks = 0;
 
     MotionEngineBridgeExtension(final ControllerExtensionDefinition definition, final ControllerHost host)
     {
@@ -67,6 +78,10 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
     @Override
     public void exit()
     {
+        restoreMappedAutomation();
+        if (lastClicked != null)
+            lastClicked.isLocked().set(false);
+
         running.set(false);
         if (socket != null)
             socket.close();
@@ -89,32 +104,31 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
 
         if (unmapRequested.getAndSet(false))
         {
+            restoreMappedAutomation();
             lastClicked.isLocked().set(false);
             mapped = false;
             armed = false;
             targetName = "None";
-            host.showPopupNotification("Motion Engine target cleared");
+            resetMapCandidate();
+            host.showPopupNotification("Motion Engine target cleared; automation restored");
         }
 
         if (mapRequested.getAndSet(false))
         {
+            // If the previous target had automation, our controller writes put Bitwig
+            // into its temporary automation-override state. Release that override before
+            // looking for a new target.
+            restoreMappedAutomation();
             lastClicked.isLocked().set(false);
             mapped = false;
-            armed = false;
-
-            if (target.exists().get())
-            {
-                lockCurrentTarget();
-            }
-            else
-            {
-                armed = true;
-                host.showPopupNotification("Motion Engine: hover a Bitwig parameter");
-            }
+            armed = true;
+            targetName = "None";
+            resetMapCandidate();
+            host.showPopupNotification("Motion Engine: move/drag the target parameter");
         }
 
-        if (armed && target.exists().get())
-            lockCurrentTarget();
+        if (armed)
+            observeMapCandidate();
 
         if (mapped && target.exists().get())
         {
@@ -141,12 +155,60 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
         host.scheduleTask(this::controlTick, delayMs);
     }
 
+    private void observeMapCandidate()
+    {
+        if (!target.exists().get())
+        {
+            resetMapCandidate();
+            return;
+        }
+
+        final String currentName = sanitize(target.name().get());
+        final double currentValue = target.value().get();
+
+        if (!mapCandidateActive || !currentName.equals(mapCandidateName))
+        {
+            mapCandidateActive = true;
+            mapCandidateName = currentName;
+            mapCandidateValue = currentValue;
+            mapCandidateSettleTicks = 0;
+            return;
+        }
+
+        // Absorb the initial values seen when the mouse merely enters a native Bitwig
+        // parameter. Only movement after the same candidate has settled can map it.
+        if (mapCandidateSettleTicks < MAP_CANDIDATE_SETTLE_TICKS)
+        {
+            mapCandidateValue = currentValue;
+            ++mapCandidateSettleTicks;
+            return;
+        }
+
+        if (Math.abs(currentValue - mapCandidateValue) >= MAP_CHANGE_EPSILON)
+            lockCurrentTarget();
+    }
+
+    private void resetMapCandidate()
+    {
+        mapCandidateActive = false;
+        mapCandidateName = "";
+        mapCandidateValue = 0.0;
+        mapCandidateSettleTicks = 0;
+    }
+
+    private void restoreMappedAutomation()
+    {
+        if (mapped && target != null && target.exists().get())
+            target.restoreAutomationControl();
+    }
+
     private void lockCurrentTarget()
     {
         lastClicked.isLocked().set(true);
         mapped = true;
         armed = false;
         targetName = sanitize(target.name().get());
+        resetMapCandidate();
         getHost().showPopupNotification("Motion Engine mapped: " + targetName);
     }
 
