@@ -37,6 +37,8 @@ juce_add_plugin(MotionEngine
     COPY_PLUGIN_AFTER_BUILD FALSE
 )
 
+juce_generate_juce_header(MotionEngine)
+
 target_sources(MotionEngine PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginProcessor.h
