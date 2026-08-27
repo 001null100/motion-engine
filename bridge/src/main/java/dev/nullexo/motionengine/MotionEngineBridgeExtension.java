@@ -7,7 +7,6 @@ import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.bitwig.extension.controller.ControllerExtension;
@@ -19,68 +18,77 @@ import com.bitwig.extension.controller.api.Parameter;
 public final class MotionEngineBridgeExtension extends ControllerExtension
 {
     private static final int PORT = 19782;
+    private static final int OUTPUTS = 8;
     private static final double MAP_CHANGE_EPSILON = 1.0 / 65536.0;
     private static final int MAP_CANDIDATE_SETTLE_TICKS = 2;
 
-    private LastClickedParameter lastClicked;
-    private Parameter target;
+    private final LastClickedParameter[] lastClicked = new LastClickedParameter[OUTPUTS];
+    private final Parameter[] targets = new Parameter[OUTPUTS];
+    private final boolean[] mapped = new boolean[OUTPUTS];
+    private final boolean[] armed = new boolean[OUTPUTS];
+    private final String[] targetNames = new String[OUTPUTS];
+
+    private final boolean[] candidateActive = new boolean[OUTPUTS];
+    private final String[] candidateName = new String[OUTPUTS];
+    private final double[] candidateValue = new double[OUTPUTS];
+    private final int[] candidateSettleTicks = new int[OUTPUTS];
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final AtomicBoolean mapRequested = new AtomicBoolean(false);
-    private final AtomicBoolean unmapRequested = new AtomicBoolean(false);
+    private final AtomicBoolean[] mapRequested = new AtomicBoolean[OUTPUTS];
+    private final AtomicBoolean[] unmapRequested = new AtomicBoolean[OUTPUTS];
     private final AtomicLong latestSequence = new AtomicLong(-1);
     private final AtomicLong receivedTotal = new AtomicLong(0);
     private final AtomicLong appliedTotal = new AtomicLong(0);
-    private final AtomicInteger requestedHz = new AtomicInteger(120);
-    private final AtomicLong latestValueBits = new AtomicLong(Double.doubleToRawLongBits(0.5));
+    private final AtomicLong[] latestValueBits = new AtomicLong[OUTPUTS];
     private final AtomicLong worstGapMicros = new AtomicLong(0);
 
-    private volatile boolean mapped = false;
-    private volatile boolean armed = false;
-    private volatile String targetName = "None";
     private volatile InetSocketAddress peer;
-
     private Thread networkThread;
     private DatagramSocket socket;
     private long appliedSequence = -1;
     private long lastApplyNanos = 0;
 
-    // LastClickedParameter is a hover tracker for native Bitwig controls. There is no
-    // separate public "clicked/touched" event, so mapping is inferred from an actual
-    // value change after a candidate has remained stable briefly. Merely hovering a
-    // parameter therefore never maps it.
-    private boolean mapCandidateActive = false;
-    private String mapCandidateName = "";
-    private double mapCandidateValue = 0.0;
-    private int mapCandidateSettleTicks = 0;
-
     MotionEngineBridgeExtension(final ControllerExtensionDefinition definition, final ControllerHost host)
     {
         super(definition, host);
+        for (int i = 0; i < OUTPUTS; ++i)
+        {
+            mapRequested[i] = new AtomicBoolean(false);
+            unmapRequested[i] = new AtomicBoolean(false);
+            latestValueBits[i] = new AtomicLong(Double.doubleToRawLongBits(0.5));
+            targetNames[i] = "None";
+            candidateName[i] = "";
+        }
     }
 
     @Override
     public void init()
     {
         final ControllerHost host = getHost();
-        lastClicked = host.createLastClickedParameter("MotionEngineTarget", "Motion Engine Target");
-        target = lastClicked.parameter();
-        target.exists().markInterested();
-        target.name().markInterested();
-        target.value().markInterested();
+        for (int i = 0; i < OUTPUTS; ++i)
+        {
+            lastClicked[i] = host.createLastClickedParameter("MotionEngineTarget" + (i + 1), "Motion Engine Target " + (i + 1));
+            targets[i] = lastClicked[i].parameter();
+            targets[i].exists().markInterested();
+            targets[i].name().markInterested();
+            targets[i].value().markInterested();
+        }
 
         startNetworkThread();
-        host.println("Motion Engine Bridge listening on UDP 127.0.0.1:" + PORT);
+        host.println("Motion Engine Bridge v1 listening on UDP 127.0.0.1:" + PORT);
         host.showPopupNotification("Motion Engine Bridge loaded");
-        host.scheduleTask(this::controlTick, 10);
+        host.scheduleTask(this::controlTick, 1);
     }
 
     @Override
     public void exit()
     {
-        restoreMappedAutomation();
-        if (lastClicked != null)
-            lastClicked.isLocked().set(false);
+        for (int i = 0; i < OUTPUTS; ++i)
+        {
+            restoreMappedAutomation(i);
+            if (lastClicked[i] != null)
+                lastClicked[i].isLocked().set(false);
+        }
 
         running.set(false);
         if (socket != null)
@@ -95,51 +103,62 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
     @Override
     public void flush()
     {
-        // All Bitwig API writes are performed by controlTick on the controller thread.
+        // All Bitwig API writes stay on the controller thread in controlTick().
     }
 
     private void controlTick()
     {
         final ControllerHost host = getHost();
 
-        if (unmapRequested.getAndSet(false))
+        for (int slot = 0; slot < OUTPUTS; ++slot)
         {
-            restoreMappedAutomation();
-            lastClicked.isLocked().set(false);
-            mapped = false;
-            armed = false;
-            targetName = "None";
-            resetMapCandidate();
-            host.showPopupNotification("Motion Engine target cleared; automation restored");
-        }
-
-        if (mapRequested.getAndSet(false))
-        {
-            // If the previous target had automation, our controller writes put Bitwig
-            // into its temporary automation-override state. Release that override before
-            // looking for a new target.
-            restoreMappedAutomation();
-            lastClicked.isLocked().set(false);
-            mapped = false;
-            armed = true;
-            targetName = "None";
-            resetMapCandidate();
-            host.showPopupNotification("Motion Engine: move/drag the target parameter");
-        }
-
-        if (armed)
-            observeMapCandidate();
-
-        if (mapped && target.exists().get())
-        {
-            final long seq = latestSequence.get();
-            if (seq != appliedSequence)
+            if (unmapRequested[slot].getAndSet(false))
             {
-                final double value = Double.longBitsToDouble(latestValueBits.get());
-                target.value().set(value);
-                appliedSequence = seq;
-                appliedTotal.incrementAndGet();
+                restoreMappedAutomation(slot);
+                lastClicked[slot].isLocked().set(false);
+                mapped[slot] = false;
+                armed[slot] = false;
+                targetNames[slot] = "None";
+                resetCandidate(slot);
+                host.showPopupNotification("Motion " + (slot + 1) + " cleared; automation restored");
+            }
 
+            if (mapRequested[slot].getAndSet(false))
+            {
+                restoreMappedAutomation(slot);
+                lastClicked[slot].isLocked().set(false);
+                mapped[slot] = false;
+                targetNames[slot] = "None";
+                resetCandidate(slot);
+
+                for (int other = 0; other < OUTPUTS; ++other)
+                    armed[other] = other == slot;
+
+                host.showPopupNotification("Motion " + (slot + 1) + ": move/drag the target parameter");
+            }
+        }
+
+        for (int slot = 0; slot < OUTPUTS; ++slot)
+            if (armed[slot])
+                observeCandidate(slot);
+
+        final long sequence = latestSequence.get();
+        if (sequence != appliedSequence)
+        {
+            boolean appliedAny = false;
+            for (int slot = 0; slot < OUTPUTS; ++slot)
+            {
+                if (!mapped[slot] || !targets[slot].exists().get())
+                    continue;
+
+                final double value = Double.longBitsToDouble(latestValueBits[slot].get());
+                targets[slot].value().set(value);
+                appliedAny = true;
+            }
+
+            if (appliedAny)
+            {
+                appliedTotal.incrementAndGet();
                 final long now = System.nanoTime();
                 if (lastApplyNanos != 0)
                 {
@@ -148,68 +167,66 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
                 }
                 lastApplyNanos = now;
             }
+            appliedSequence = sequence;
         }
 
-        final int hz = Math.max(1, requestedHz.get());
-        final long delayMs = Math.max(1L, Math.round(1000.0 / hz));
-        host.scheduleTask(this::controlTick, delayMs);
+        host.scheduleTask(this::controlTick, 1);
     }
 
-    private void observeMapCandidate()
+    private void observeCandidate(final int slot)
     {
+        final Parameter target = targets[slot];
         if (!target.exists().get())
         {
-            resetMapCandidate();
+            resetCandidate(slot);
             return;
         }
 
         final String currentName = sanitize(target.name().get());
         final double currentValue = target.value().get();
 
-        if (!mapCandidateActive || !currentName.equals(mapCandidateName))
+        if (!candidateActive[slot] || !currentName.equals(candidateName[slot]))
         {
-            mapCandidateActive = true;
-            mapCandidateName = currentName;
-            mapCandidateValue = currentValue;
-            mapCandidateSettleTicks = 0;
+            candidateActive[slot] = true;
+            candidateName[slot] = currentName;
+            candidateValue[slot] = currentValue;
+            candidateSettleTicks[slot] = 0;
             return;
         }
 
-        // Absorb the initial values seen when the mouse merely enters a native Bitwig
-        // parameter. Only movement after the same candidate has settled can map it.
-        if (mapCandidateSettleTicks < MAP_CANDIDATE_SETTLE_TICKS)
+        if (candidateSettleTicks[slot] < MAP_CANDIDATE_SETTLE_TICKS)
         {
-            mapCandidateValue = currentValue;
-            ++mapCandidateSettleTicks;
+            candidateValue[slot] = currentValue;
+            ++candidateSettleTicks[slot];
             return;
         }
 
-        if (Math.abs(currentValue - mapCandidateValue) >= MAP_CHANGE_EPSILON)
-            lockCurrentTarget();
+        if (Math.abs(currentValue - candidateValue[slot]) >= MAP_CHANGE_EPSILON)
+            lockCurrentTarget(slot);
     }
 
-    private void resetMapCandidate()
+    private void lockCurrentTarget(final int slot)
     {
-        mapCandidateActive = false;
-        mapCandidateName = "";
-        mapCandidateValue = 0.0;
-        mapCandidateSettleTicks = 0;
+        lastClicked[slot].isLocked().set(true);
+        mapped[slot] = true;
+        armed[slot] = false;
+        targetNames[slot] = sanitize(targets[slot].name().get());
+        resetCandidate(slot);
+        getHost().showPopupNotification("Motion " + (slot + 1) + " mapped: " + targetNames[slot]);
     }
 
-    private void restoreMappedAutomation()
+    private void resetCandidate(final int slot)
     {
-        if (mapped && target != null && target.exists().get())
-            target.restoreAutomationControl();
+        candidateActive[slot] = false;
+        candidateName[slot] = "";
+        candidateValue[slot] = 0.0;
+        candidateSettleTicks[slot] = 0;
     }
 
-    private void lockCurrentTarget()
+    private void restoreMappedAutomation(final int slot)
     {
-        lastClicked.isLocked().set(true);
-        mapped = true;
-        armed = false;
-        targetName = sanitize(target.name().get());
-        resetMapCandidate();
-        getHost().showPopupNotification("Motion Engine mapped: " + targetName);
+        if (mapped[slot] && targets[slot] != null && targets[slot].exists().get())
+            targets[slot].restoreAutomationControl();
     }
 
     private void startNetworkThread()
@@ -230,7 +247,7 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
         {
             socket = localSocket;
             localSocket.setSoTimeout(25);
-            final byte[] buffer = new byte[1024];
+            final byte[] buffer = new byte[2048];
 
             while (running.get())
             {
@@ -241,10 +258,7 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
                     peer = new InetSocketAddress(packet.getAddress(), packet.getPort());
                     handlePacket(new String(packet.getData(), packet.getOffset(), packet.getLength(), StandardCharsets.UTF_8).trim());
                 }
-                catch (final SocketTimeoutException ignored)
-                {
-                    // Timeout gives us a chance to emit telemetry and notice shutdown.
-                }
+                catch (final SocketTimeoutException ignored) {}
 
                 final long now = System.nanoTime();
                 final double seconds = (now - lastTelemetryNanos) / 1_000_000_000.0;
@@ -276,26 +290,50 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
     private void handlePacket(final String message)
     {
         final String[] fields = message.split("\\|", -1);
-        if (fields.length < 2 || !"ME1".equals(fields[0]))
+        if (fields.length < 2 || !"ME2".equals(fields[0]))
             return;
 
         switch (fields[1])
         {
-            case "MAP" -> mapRequested.set(true);
-            case "UNMAP" -> unmapRequested.set(true);
-            case "VALUE" -> {
-                if (fields.length < 5)
+            case "MAP" -> {
+                final int slot = parseSlot(fields);
+                if (slot >= 0) mapRequested[slot].set(true);
+            }
+            case "UNMAP" -> {
+                final int slot = parseSlot(fields);
+                if (slot >= 0) unmapRequested[slot].set(true);
+            }
+            case "VALUES" -> {
+                if (fields.length < 3 + OUTPUTS)
                     return;
                 try
                 {
                     latestSequence.set(Long.parseUnsignedLong(fields[2]));
-                    latestValueBits.set(Double.doubleToRawLongBits(Math.max(0.0, Math.min(1.0, Double.parseDouble(fields[3])))));
-                    requestedHz.set(Math.max(1, Math.min(1000, Integer.parseInt(fields[4]))));
+                    for (int slot = 0; slot < OUTPUTS; ++slot)
+                    {
+                        final double value = Math.max(0.0, Math.min(1.0, Double.parseDouble(fields[3 + slot])));
+                        latestValueBits[slot].set(Double.doubleToRawLongBits(value));
+                    }
                     receivedTotal.incrementAndGet();
                 }
                 catch (final NumberFormatException ignored) {}
             }
             default -> { }
+        }
+    }
+
+    private int parseSlot(final String[] fields)
+    {
+        if (fields.length < 3)
+            return -1;
+        try
+        {
+            final int slot = Integer.parseInt(fields[2]);
+            return slot >= 0 && slot < OUTPUTS ? slot : -1;
+        }
+        catch (final NumberFormatException ignored)
+        {
+            return -1;
         }
     }
 
@@ -306,10 +344,20 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
         if (destination == null)
             return;
 
+        int mappedMask = 0;
+        int armedMask = 0;
+        final StringBuilder names = new StringBuilder();
+        for (int slot = 0; slot < OUTPUTS; ++slot)
+        {
+            if (mapped[slot]) mappedMask |= 1 << slot;
+            if (armed[slot]) armedMask |= 1 << slot;
+            if (slot > 0) names.append('~');
+            names.append(sanitize(targetNames[slot]));
+        }
+
         final String message = String.format(Locale.ROOT,
-            "ME1|STATUS|%s|%.3f|%.3f|%d|%.3f|%d|%d\n",
-            sanitize(targetName), rxHz, appliedHz, requestedHz.get(), worstGapMs,
-            mapped ? 1 : 0, armed ? 1 : 0);
+            "ME2|STATUS|%.3f|%.3f|%.3f|%d|%d|%s\n",
+            rxHz, appliedHz, worstGapMs, mappedMask, armedMask, names);
         final byte[] bytes = message.getBytes(StandardCharsets.UTF_8);
         try
         {
@@ -321,7 +369,7 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
     private static String sanitize(final String value)
     {
         if (value == null || value.isBlank())
-            return "Unnamed parameter";
-        return value.replace('|', '/').replace('\n', ' ').replace('\r', ' ');
+            return "None";
+        return value.replace('|', '/').replace('~', '/').replace('\n', ' ').replace('\r', ' ');
     }
 }
