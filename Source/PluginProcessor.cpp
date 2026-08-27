@@ -5,14 +5,19 @@ MotionEngineAudioProcessor::MotionEngineAudioProcessor()
     : AudioProcessor(BusesProperties()
         .withInput("Input", juce::AudioChannelSet::stereo(), true)
         .withOutput("Output", juce::AudioChannelSet::stereo(), true)
-        .withOutput("Motion 1", juce::AudioChannelSet::mono(), true)
-        .withOutput("Motion 2", juce::AudioChannelSet::mono(), true)
-        .withOutput("Motion 3", juce::AudioChannelSet::mono(), true)
-        .withOutput("Motion 4", juce::AudioChannelSet::mono(), true)
-        .withOutput("Motion 5", juce::AudioChannelSet::mono(), true)
-        .withOutput("Motion 6", juce::AudioChannelSet::mono(), true)
-        .withOutput("Motion 7", juce::AudioChannelSet::mono(), true)
-        .withOutput("Motion 8", juce::AudioChannelSet::mono(), true)),
+        // Auxiliary modulation buses are opt-in. Some VST3 hosts are fragile when an
+        // insert effect arrives with many auxiliary outputs enabled at instantiation.
+        // The buses remain exposed and can be activated explicitly for the Audio Rate
+        // fallback, while the normal controller-extension path loads as a plain stereo
+        // effect.
+        .withOutput("Motion 1", juce::AudioChannelSet::mono(), false)
+        .withOutput("Motion 2", juce::AudioChannelSet::mono(), false)
+        .withOutput("Motion 3", juce::AudioChannelSet::mono(), false)
+        .withOutput("Motion 4", juce::AudioChannelSet::mono(), false)
+        .withOutput("Motion 5", juce::AudioChannelSet::mono(), false)
+        .withOutput("Motion 6", juce::AudioChannelSet::mono(), false)
+        .withOutput("Motion 7", juce::AudioChannelSet::mono(), false)
+        .withOutput("Motion 8", juce::AudioChannelSet::mono(), false)),
       parameters(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
     motionCore = std::make_unique<motion::MotionEngineCore>(parameters);
