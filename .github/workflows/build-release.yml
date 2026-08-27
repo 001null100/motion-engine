@@ -15,6 +15,7 @@ concurrency:
 
 env:
   JUCE_VERSION: 9.0.0
+  PLUGINVAL_VERSION: 1.0.4
 
 jobs:
   windows:
@@ -55,6 +56,17 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release --parallel
 
+      - name: Validate VST3 with pluginval
+        shell: pwsh
+        run: |
+          $vst = Get-ChildItem -Path build -Recurse -Directory -Filter "Motion Engine.vst3" | Select-Object -First 1
+          if (-not $vst) { throw "Motion Engine.vst3 was not produced" }
+          Invoke-WebRequest "https://github.com/Tracktion/pluginval/releases/download/v$env:PLUGINVAL_VERSION/pluginval_Windows.zip" -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath .pluginval -Force
+          New-Item -ItemType Directory -Force pluginval-results | Out-Null
+          & .\.pluginval\pluginval.exe --validate-in-process --strictness-level 1 --output-dir "$PWD\pluginval-results" $vst.FullName
+          if ($LASTEXITCODE -ne 0) { throw "pluginval failed with exit code $LASTEXITCODE" }
+
       - name: Build Bitwig bridge
         shell: pwsh
         run: |
@@ -80,6 +92,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Upload pluginval logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: MotionEngine-pluginval
+          path: pluginval-results/*
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Publish v1 alpha release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
@@ -87,4 +108,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "v1-alpha-${{ github.run_number }}"
-          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v1 alpha ${{ github.run_number }}" --notes "Automated Windows VST3 + Bitwig bridge build from ${{ github.sha }}. See TESTING.md in the release assets for the v1 test pass."
+          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v1 alpha ${{ github.run_number }}" --notes "Automated Windows VST3 + Bitwig bridge build from ${{ github.sha }}. VST3 instantiation is smoke-tested with pluginval before publication. See TESTING.md in the release assets for the v1 test pass."
