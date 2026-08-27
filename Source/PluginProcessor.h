@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include <memory>
+#include "MotionEngineCore.h"
 #include "BridgeEngine.h"
 
 class MotionEngineAudioProcessor final : public juce::AudioProcessor
@@ -19,7 +20,7 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return JucePlugin_Name; }
-    bool acceptsMidi() const override { return false; }
+    bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
@@ -36,9 +37,11 @@ public:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     juce::AudioProcessorValueTreeState parameters;
+    motion::MotionEngineCore& getMotionCore() noexcept { return *motionCore; }
     BridgeEngine& getBridge() noexcept { return *bridge; }
 
 private:
+    std::unique_ptr<motion::MotionEngineCore> motionCore;
     std::unique_ptr<BridgeEngine> bridge;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MotionEngineAudioProcessor)
