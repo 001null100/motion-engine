@@ -63,9 +63,17 @@ jobs:
           if (-not $vst) { throw "Motion Engine.vst3 was not produced" }
           Invoke-WebRequest "https://github.com/Tracktion/pluginval/releases/download/v$env:PLUGINVAL_VERSION/pluginval_Windows.zip" -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath .pluginval -Force
-          New-Item -ItemType Directory -Force pluginval-results | Out-Null
-          & .\.pluginval\pluginval.exe --validate-in-process --strictness-level 1 --output-dir "$PWD\pluginval-results" $vst.FullName
-          if ($LASTEXITCODE -ne 0) { throw "pluginval failed with exit code $LASTEXITCODE" }
+          $resultDir = Join-Path $PWD "pluginval-results"
+          New-Item -ItemType Directory -Force $resultDir | Out-Null
+          $pluginval = Join-Path $PWD ".pluginval/pluginval.exe"
+          $arguments = @(
+            "--validate-in-process",
+            "--strictness-level", "3",
+            "--output-dir", ('"' + $resultDir + '"'),
+            ('"' + $vst.FullName + '"')
+          )
+          $process = Start-Process -FilePath $pluginval -ArgumentList $arguments -PassThru -Wait -NoNewWindow
+          if ($process.ExitCode -ne 0) { throw "pluginval failed with exit code $($process.ExitCode)" }
 
       - name: Build Bitwig bridge
         shell: pwsh
@@ -108,4 +116,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "v1-alpha-${{ github.run_number }}"
-          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v1 alpha ${{ github.run_number }}" --notes "Automated Windows VST3 + Bitwig bridge build from ${{ github.sha }}. VST3 instantiation is smoke-tested with pluginval before publication. See TESTING.md in the release assets for the v1 test pass."
+          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v1 alpha ${{ github.run_number }}" --notes "Automated Windows VST3 + Bitwig bridge build from ${{ github.sha }}. VST3 passes pluginval strictness level 3 before publication. See TESTING.md in the release assets for the v1 test pass."
