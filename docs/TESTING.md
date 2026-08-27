@@ -22,21 +22,20 @@ If the bridge does not appear, press `Ctrl+Enter`, search for **Control Script C
 
 ## 2. Learn the mapping workflow
 
-### Third-party plug-in parameter, for example Serum 2
+Bitwig's `LastClickedParameter` API behaves as a live hover tracker for native controls and does not expose a separate click event. Motion Engine therefore arms mapping and waits for an **actual parameter value change** before locking the target.
 
-1. Open the target plug-in GUI.
-2. Physically click or drag the parameter you want to test so Bitwig receives an automation-touch event.
-3. Return to Motion Engine and press **MAP TARGET**.
-4. Motion Engine should show the parameter name and `mapped`.
+For both native Bitwig controls and third-party plug-in parameters:
 
-### Native Bitwig parameter
+1. Press **MAP TARGET**. Motion Engine should say `waiting for parameter movement`.
+2. Move to the parameter you want.
+3. Actually drag/turn/change it slightly.
+4. Motion Engine should lock it and show `mapped` plus the parameter name.
 
-1. Make sure your mouse is not currently hovering a parameter.
-2. In Motion Engine press **MAP TARGET**. It should say `waiting for target`.
-3. Move the mouse over the native Bitwig parameter you want to test.
-4. The extension should lock it automatically and Motion Engine should switch to `mapped`.
+Hovering a native Bitwig parameter without moving it must **not** map it.
 
-Press **UNMAP** before changing to an unrelated target.
+A click that does not change the parameter value cannot be distinguished reliably through Bitwig's public controller API. For mapping, make a small drag/turn instead.
+
+Press **UNMAP** before changing to an unrelated target. UNMAP now also calls Bitwig's `restoreAutomationControl()` for the mapped parameter so any pre-existing automation that was temporarily overridden can resume.
 
 ## 3. First sanity check
 
@@ -49,7 +48,7 @@ Map it to **Tool > Pan** or another obvious native bipolar-ish control. Watch an
 - `applied` rate
 - `worst gap`
 
-Expected behavior: `sent` and `bridge rx` should be close to 120 Hz. `applied` is the important measurement and may reveal Bitwig controller scheduling limits.
+Expected behavior: `sent` and `bridge rx` should be close to the requested rate. `applied` is the important measurement and may reveal Bitwig controller scheduling limits.
 
 ## 4. Rate sweep
 
@@ -85,10 +84,15 @@ With the same target and rate, test:
 
 1. **Ramp** at 2 Hz. Listen specifically at the wrap from 1 back to 0.
 2. **Step** at 2 Hz. Confirm transitions happen promptly and do not produce strange bursts of intermediate values.
-3. **Impulse** at 2 Hz. This emits an approximately 5 ms full-scale pulse. Note whether it is preserved, shortened, missed entirely, or smeared.
+3. **Impulse** at 2 Hz. This generates an approximately 5 ms full-scale pulse. Note whether it is preserved, shortened, missed entirely, or smeared.
 4. **Spring**. Set stiffness around 18 and damping around 2.4, then repeatedly press **KICK SPRING**. Listen for the overshoot and decay.
 
-The impulse test is intentionally harsher than normal Motion Engine use.
+The impulse test is intentionally harsher than normal Motion Engine use. Two debug limitations matter when interpreting it:
+
+- the VST meter redraws at only 20 Hz, so a 5 ms pulse will usually be invisible even when generated correctly;
+- the bridge coalesces continuous values to the latest value before each Bitwig controller tick, so a short `1 -> 0` pulse that occurs entirely between two controller ticks can be lost by design.
+
+With a controller path around 40-45 Hz, a literal 5 ms external parameter pulse is therefore not a realistic supported signal. Event-like impacts should instead become longer shaped motion, such as a spring kick/envelope, or use a separate future event path.
 
 ## 7. Target matrix
 
@@ -116,14 +120,16 @@ This is architecturally more important than raw speed.
 
 ### Existing automation
 
+Direct controller writes to an automated Bitwig parameter intentionally put that parameter into Bitwig's temporary **automation override** state. While Motion Engine is mapped, absolute automation therefore does not combine with the Motion Engine base-value stream in the same clean way that Bitwig modulators do.
+
 1. Unmap.
 2. Draw obvious automation for a parameter over several bars.
 3. Map Motion Engine to that same parameter.
-4. Test once with automation playback active.
-5. Arm automation recording only if you deliberately want to test recording behavior. Motion Engine does **not** call `Parameter.touch(true)`, so it should not intentionally write touch automation by itself.
-6. Stop playback, unmap, and check whether the original automation/base value was preserved or overwritten.
+4. Confirm Motion Engine takes over the base value while mapped.
+5. Press **UNMAP**.
+6. Confirm the original automation resumes automatically. If it does not, note whether Bitwig's global **Restore Automation Control** indicator is still armed.
 
-Make a note of the exact automation mode Bitwig was using.
+The automation data itself should remain present; UNMAP should only release Motion Engine's temporary override.
 
 ## 9. What to send back
 
@@ -144,6 +150,6 @@ A screen recording is useful if the parameter visibly stair-steps, but the telem
 
 **Strong pass:** 120-250 Hz is stable and perceptually transparent on sensitive parameters; spring/impact behavior is convincing; base-value interaction with Bitwig modulation is sane.
 
-**Usable with caveat:** ordinary motion is excellent but very sharp impacts are softened or missed. We keep the controller bridge for normal outputs and design a special path for transient-rate signals later.
+**Usable with caveat:** controller scheduling tops out well below 120 Hz, but ordinary physics motion remains perceptually smooth, Bitwig modulators compose correctly with the moved base value, and sharp/event-like signals can be handled as shaped motion or through a separate path.
 
-**Architectural fail:** update scheduling is visibly/audibly coarse at ordinary Motion Engine speeds, or continuous writes destroy/fight automation/modulation in a way that makes the workflow unsafe. In that case we pivot to an audio/native-modulator bridge before building the full plugin.
+**Architectural fail:** update scheduling is visibly/audibly coarse at ordinary Motion Engine speeds, or continuous writes make normal project workflows unsafe even after automation control is correctly restored on unmap. In that case we pivot to another host-integration architecture before building the full plugin.
