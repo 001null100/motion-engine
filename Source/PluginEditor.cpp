@@ -34,7 +34,9 @@ MotionCanvas::MotionCanvas(MotionEngineAudioProcessor& p) : processor(p)
 
 juce::Rectangle<float> MotionCanvas::worldBounds() const
 {
-    return getLocalBounds().toFloat().reduced(18.0f, 20.0f);
+    auto bounds = getLocalBounds().toFloat().reduced(14.0f, 14.0f);
+    bounds.removeFromBottom(24.0f);
+    return bounds;
 }
 
 juce::Point<float> MotionCanvas::worldToScreen(const float worldX, const float worldY) const
@@ -64,6 +66,12 @@ void MotionCanvas::paint(juce::Graphics& g)
     g.fillRoundedRectangle(area, 12.0f);
 
     const auto world = worldBounds();
+    g.setColour(juce::Colour(0xff10151d));
+    g.fillRoundedRectangle(world, 9.0f);
+
+    g.saveState();
+    g.reduceClipRegion(world.toNearestInt());
+
     g.setColour(juce::Colour(0xff202836));
     for (int i = 1; i < 8; ++i)
     {
@@ -87,15 +95,31 @@ void MotionCanvas::paint(juce::Graphics& g)
         const float zx = processor.parameters.getRawParameterValue(prefix + "X")->load();
         const float zy = processor.parameters.getRawParameterValue(prefix + "Y")->load();
         const float radius = processor.parameters.getRawParameterValue(prefix + "Radius")->load();
+        const float falloff = juce::jmax(0.1f, processor.parameters.getRawParameterValue(prefix + "Falloff")->load());
         const auto center = worldToScreen(zx, zy);
         const float pixels = worldRadiusToPixels(radius);
         const auto ellipse = juce::Rectangle<float>(center.x - pixels, center.y - pixels, pixels * 2.0f, pixels * 2.0f);
         const auto colour = zoneColour(zone);
         const float amount = snapshot.zones[static_cast<size_t>(zone)];
 
-        g.setColour(colour.withAlpha(0.055f + amount * 0.12f));
+        g.setColour(colour.withAlpha(0.045f + amount * 0.13f));
         g.fillEllipse(ellipse);
-        g.setColour(colour.withAlpha(zone == selectedZone ? 0.95f : 0.42f));
+
+        // Show the response curve spatially. These rings mark approximately
+        // 75%, 50%, and 25% zone output for the current falloff exponent.
+        constexpr std::array<float, 3> responseLevels { 0.75f, 0.50f, 0.25f };
+        for (size_t levelIndex = 0; levelIndex < responseLevels.size(); ++levelIndex)
+        {
+            const float response = responseLevels[levelIndex];
+            const float ratio = 1.0f - std::pow(response, 1.0f / falloff);
+            const float ringRadius = pixels * ratio;
+            const auto ring = juce::Rectangle<float>(center.x - ringRadius, center.y - ringRadius,
+                                                      ringRadius * 2.0f, ringRadius * 2.0f);
+            g.setColour(colour.withAlpha(0.16f + static_cast<float>(levelIndex) * 0.035f));
+            g.drawEllipse(ring, 1.0f);
+        }
+
+        g.setColour(colour.withAlpha(zone == selectedZone ? 0.95f : 0.46f));
         g.drawEllipse(ellipse, zone == selectedZone ? 2.0f : 1.0f);
         g.fillEllipse(juce::Rectangle<float>(center.x - 4.0f, center.y - 4.0f, 8.0f, 8.0f));
         g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
@@ -108,7 +132,7 @@ void MotionCanvas::paint(juce::Graphics& g)
         const float anchorX = (processor.parameters.getRawParameterValue("motionD")->load() - 0.5f) * 0.9f;
         const auto anchor = worldToScreen(anchorX, 0.0f);
         const auto body = worldToScreen(snapshot.x, snapshot.y);
-        g.setColour(accent.withAlpha(0.38f));
+        g.setColour(accent.withAlpha(0.42f));
         g.drawLine(anchor.x, anchor.y, body.x, body.y, 1.5f);
         g.drawEllipse(juce::Rectangle<float>(anchor.x - 5.0f, anchor.y - 5.0f, 10.0f, 10.0f), 1.5f);
     }
@@ -126,14 +150,17 @@ void MotionCanvas::paint(juce::Graphics& g)
         g.drawEllipse(juce::Rectangle<float>(centre.x - 7.0f, centre.y - 7.0f, 14.0f, 14.0f), 1.5f);
     }
 
+    // A short luminous tail is much easier to read than a long uniform history.
     if (trail.size() > 1)
     {
-        juce::Path path;
-        path.startNewSubPath(trail.front());
         for (size_t i = 1; i < trail.size(); ++i)
-            path.lineTo(trail[i]);
-        g.setColour(accent.withAlpha(0.34f));
-        g.strokePath(path, juce::PathStrokeType(1.6f));
+        {
+            const float t = static_cast<float>(i) / static_cast<float>(trail.size() - 1);
+            const float alpha = 0.035f + 0.72f * t * t;
+            const float thickness = 0.8f + 2.0f * t;
+            g.setColour(accent.withAlpha(alpha));
+            g.drawLine(trail[i - 1].x, trail[i - 1].y, trail[i].x, trail[i].y, thickness);
+        }
     }
 
     const auto body = worldToScreen(snapshot.x, snapshot.y);
@@ -150,20 +177,27 @@ void MotionCanvas::paint(juce::Graphics& g)
     g.setColour(accent);
     g.drawEllipse(juce::Rectangle<float>(body.x - bodyRadius, body.y - bodyRadius, bodyRadius * 2.0f, bodyRadius * 2.0f), 2.0f);
 
+    g.restoreState();
+
+    g.setColour(juce::Colour(0xff46536a));
+    g.drawRoundedRectangle(world, 9.0f, 1.2f);
+
+    auto help = getLocalBounds().reduced(18).removeFromBottom(18);
     g.setColour(muted);
-    g.setFont(juce::FontOptions(12.0f));
-    g.drawText("drag body = throw  •  drag Zone center = move  •  drag Zone ring = radius  •  double-click = HIT",
-               world.toNearestInt().removeFromBottom(22), juce::Justification::centredLeft);
+    g.setFont(juce::FontOptions(11.5f));
+    g.drawText("Drag body: throw | Drag Zone center: move | Drag Zone ring: radius | Double-click: HIT",
+               help, juce::Justification::centredLeft);
 }
 
 void MotionCanvas::tick()
 {
     const auto snapshot = processor.getMotionCore().getSnapshot();
     const auto point = worldToScreen(snapshot.x, snapshot.y);
-    if (trail.empty() || trail.back().getDistanceFrom(point) > 1.0f)
+    if (trail.empty() || trail.back().getDistanceFrom(point) > 0.75f)
         trail.push_back(point);
-    if (trail.size() > 96)
-        trail.erase(trail.begin(), trail.begin() + static_cast<std::ptrdiff_t>(trail.size() - 96));
+    constexpr size_t maxTrailPoints = 28;
+    if (trail.size() > maxTrailPoints)
+        trail.erase(trail.begin(), trail.begin() + static_cast<std::ptrdiff_t>(trail.size() - maxTrailPoints));
     repaint();
 }
 
@@ -242,7 +276,8 @@ void MotionCanvas::mouseDown(const juce::MouseEvent& event)
             dragZone = zone;
             selectedZone = zone;
             dragMode = dist <= 15.0f ? DragMode::zoneMove : DragMode::zoneRadius;
-            if (onZoneSelected) onZoneSelected(zone);
+            if (onZoneSelected)
+                onZoneSelected(zone);
             beginZoneGesture();
             return;
         }
@@ -304,12 +339,24 @@ OutputStrip::OutputStrip(MotionEngineAudioProcessor& p, const int slot) : proces
 
     sourceBox.addItemList(motion::MotionEngineCore::sourceNames(), 1);
     curveBox.addItemList(motion::MotionEngineCore::curveNames(), 1);
-    configureCompactSlider(minSlider);
-    configureCompactSlider(maxSlider);
+
     configureCompactSlider(smoothSlider);
-    minSlider.setTextValueSuffix(" min");
-    maxSlider.setTextValueSuffix(" max");
     smoothSlider.setTextValueSuffix(" ms");
+
+    // Min/max are ranges, not motions. A compact editable number field is much
+    // easier to use here than squeezing a pretend slider into 80 pixels.
+    for (auto* rangeSlider : { &minSlider, &maxSlider })
+    {
+        rangeSlider->setSliderStyle(juce::Slider::LinearBar);
+        rangeSlider->setTextBoxStyle(juce::Slider::TextBoxLeft, false, 62, 18);
+        rangeSlider->setNumDecimalPlacesToDisplay(3);
+        rangeSlider->setColour(juce::Slider::backgroundColourId, juce::Colour(0xff111722));
+        rangeSlider->setColour(juce::Slider::trackColourId, accent.withAlpha(0.22f));
+        rangeSlider->setColour(juce::Slider::textBoxTextColourId, text);
+        rangeSlider->setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    }
+    minSlider.setTooltip("Minimum output value");
+    maxSlider.setTooltip("Maximum output value");
 
     targetLabel.setColour(juce::Label::textColourId, muted);
     targetLabel.setFont(juce::FontOptions(11.5f));
@@ -362,19 +409,18 @@ void OutputStrip::paint(juce::Graphics& g)
 void OutputStrip::resized()
 {
     auto area = getLocalBounds().reduced(8, 5);
-    auto number = area.removeFromLeft(24);
-    indexLabel.setBounds(number);
+    indexLabel.setBounds(area.removeFromLeft(24));
 
     auto top = area.removeFromTop(28);
-    sourceBox.setBounds(top.removeFromLeft(155).reduced(2, 1));
-    minSlider.setBounds(top.removeFromLeft(88).reduced(2, 1));
-    maxSlider.setBounds(top.removeFromLeft(88).reduced(2, 1));
-    mapButton.setBounds(top.removeFromRight(54).reduced(2, 1));
+    sourceBox.setBounds(top.removeFromLeft(142).reduced(2, 1));
+    minSlider.setBounds(top.removeFromLeft(66).reduced(2, 1));
+    maxSlider.setBounds(top.removeFromLeft(66).reduced(2, 1));
     clearButton.setBounds(top.removeFromRight(28).reduced(2, 1));
+    mapButton.setBounds(top.removeFromRight(56).reduced(2, 1));
 
     auto bottom = area.removeFromBottom(27);
-    curveBox.setBounds(bottom.removeFromLeft(120).reduced(2, 1));
-    smoothSlider.setBounds(bottom.removeFromLeft(130).reduced(2, 1));
+    curveBox.setBounds(bottom.removeFromLeft(108).reduced(2, 1));
+    smoothSlider.setBounds(bottom.removeFromLeft(122).reduced(2, 1));
     targetLabel.setBounds(bottom.reduced(5, 0));
 }
 
@@ -383,7 +429,7 @@ void OutputStrip::update(const motion::MotionEngineCore::Snapshot& snapshot, con
     currentValue = snapshot.outputs[static_cast<size_t>(index)];
     if (status.armed)
     {
-        targetLabel.setText("move target parameter…", juce::dontSendNotification);
+        targetLabel.setText("move target parameter...", juce::dontSendNotification);
         targetLabel.setColour(juce::Label::textColourId, juce::Colour(0xffffcf73));
         mapButton.setButtonText("ARMED");
     }
@@ -395,7 +441,7 @@ void OutputStrip::update(const motion::MotionEngineCore::Snapshot& snapshot, con
     }
     else
     {
-        targetLabel.setText("unmapped  •  aux: Motion " + juce::String(index + 1), juce::dontSendNotification);
+        targetLabel.setText("unmapped | aux: Motion " + juce::String(index + 1), juce::dontSendNotification);
         targetLabel.setColour(juce::Label::textColourId, muted);
         mapButton.setButtonText("MAP");
     }
@@ -406,10 +452,6 @@ void OutputStrip::update(const motion::MotionEngineCore::Snapshot& snapshot, con
 MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineAudioProcessor& p)
     : AudioProcessorEditor(&p), processor(p), canvas(p)
 {
-    // Do not size the editor until every child that resized() touches exists.
-    // Component::setSize() calls resized() synchronously, and doing this earlier
-    // dereferenced the still-null outputStrips array during editor creation.
-
     titleLabel.setText("MOTION ENGINE", juce::dontSendNotification);
     titleLabel.setFont(juce::FontOptions(24.0f, juce::Font::bold));
     titleLabel.setColour(juce::Label::textColourId, text);
@@ -421,6 +463,7 @@ MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineA
     outputsTitleLabel.setColour(juce::Label::textColourId, text);
     bridgeLabel.setFont(juce::FontOptions(11.5f));
     bridgeLabel.setColour(juce::Label::textColourId, muted);
+    bridgeLabel.setMinimumHorizontalScale(0.72f);
 
     modelBox.addItemList(motion::MotionEngineCore::modelNames(), 1);
     constraintBox.addItemList(motion::MotionEngineCore::constraintNames(), 1);
@@ -435,13 +478,14 @@ MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineA
                              static_cast<juce::Component*>(&zoneRadiusSlider), static_cast<juce::Component*>(&zoneFalloffSlider) })
         addAndMakeVisible(component);
 
-    configureSlider(timeSlider, "×");
+    configureSlider(timeSlider, " x");
+    timeSlider.setNumDecimalPlacesToDisplay(3);
     configureSlider(energySlider);
     configureSlider(dampingSlider);
     configureSlider(audioKickSlider);
     configureLabel(timeLabel, "Time");
     configureLabel(energyLabel, "Energy");
-    configureLabel(dampingLabel, "Damping");
+    configureLabel(dampingLabel, "World Drag");
     configureLabel(audioKickLabel, "Audio Kick");
 
     for (int i = 0; i < 4; ++i)
@@ -478,7 +522,10 @@ MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineA
     audioKickAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "audioKick", audioKickSlider);
 
     for (int i = 0; i < 4; ++i)
-        motionAttachments[static_cast<size_t>(i)] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "motion" + juce::String::charToString(static_cast<juce::juce_wchar>('A' + i)), motionSliders[static_cast<size_t>(i)]);
+        motionAttachments[static_cast<size_t>(i)] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+            processor.parameters,
+            "motion" + juce::String::charToString(static_cast<juce::juce_wchar>('A' + i)),
+            motionSliders[static_cast<size_t>(i)]);
 
     for (int i = 0; i < motion::kNumOutputs; ++i)
     {
@@ -498,11 +545,14 @@ MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineA
     zoneBox.setSelectedItemIndex(0, juce::sendNotificationSync);
     updateModelLabels();
 
-    // All children now exist, so resize callbacks are safe.
+    // Size only after all children exist. setSize() calls resized() synchronously.
     setResizable(true, true);
-    setResizeLimits(1040, 680, 1800, 1100);
-    setSize(1220, 780);
-    startTimerHz(30);
+    setResizeLimits(1120, 700, 1800, 1100);
+    setSize(1320, 820);
+
+    // The physics runs at 240 Hz; 60 Hz visual updates keep dragging and trails
+    // responsive without wasting UI-thread time.
+    startTimerHz(60);
 }
 
 MotionEngineAudioProcessorEditor::~MotionEngineAudioProcessorEditor() = default;
@@ -529,8 +579,8 @@ void MotionEngineAudioProcessorEditor::configureLabel(juce::Label& label, const 
 void MotionEngineAudioProcessorEditor::paint(juce::Graphics& g)
 {
     g.fillAll(bg);
-    auto right = getLocalBounds().toFloat().reduced(10.0f);
-    right.removeFromLeft(690.0f);
+    auto content = getLocalBounds().toFloat().reduced(10.0f);
+    auto right = content.removeFromRight(465.0f);
     g.setColour(panel);
     g.fillRoundedRectangle(right, 12.0f);
 }
@@ -542,18 +592,18 @@ void MotionEngineAudioProcessorEditor::resized()
     titleLabel.setBounds(header.removeFromLeft(210));
     subtitleLabel.setBounds(header.removeFromLeft(250).withTrimmedTop(5));
 
-    auto right = area.removeFromRight(510);
+    auto right = area.removeFromRight(455);
     area.removeFromRight(12);
     auto left = area;
 
-    auto controls = left.removeFromTop(190);
+    auto controls = left.removeFromTop(178);
     auto firstRow = controls.removeFromTop(36);
     modelBox.setBounds(firstRow.removeFromLeft(190).reduced(2));
     constraintBox.setBounds(firstRow.removeFromLeft(160).reduced(2));
     hitButton.setBounds(firstRow.removeFromLeft(78).reduced(3));
     resetButton.setBounds(firstRow.removeFromLeft(86).reduced(3));
 
-    auto globalRow = controls.removeFromTop(48);
+    auto globalRow = controls.removeFromTop(46);
     const int globalWidth = globalRow.getWidth() / 4;
     std::array<juce::Slider*, 4> globalSliders { &timeSlider, &energySlider, &dampingSlider, &audioKickSlider };
     std::array<juce::Label*, 4> globalLabels { &timeLabel, &energyLabel, &dampingLabel, &audioKickLabel };
@@ -564,7 +614,7 @@ void MotionEngineAudioProcessorEditor::resized()
         globalSliders[static_cast<size_t>(i)]->setBounds(cell);
     }
 
-    auto motionRow = controls.removeFromTop(54);
+    auto motionRow = controls.removeFromTop(50);
     const int motionWidth = motionRow.getWidth() / 4;
     for (int i = 0; i < 4; ++i)
     {
@@ -573,7 +623,7 @@ void MotionEngineAudioProcessorEditor::resized()
         motionSliders[static_cast<size_t>(i)].setBounds(cell);
     }
 
-    auto zoneRow = controls.removeFromTop(48);
+    auto zoneRow = controls.removeFromTop(46);
     auto zoneCell = zoneRow.removeFromLeft(140).reduced(2);
     zoneLabel.setBounds(zoneCell.removeFromTop(17));
     zoneBox.setBounds(zoneCell);
@@ -584,11 +634,11 @@ void MotionEngineAudioProcessorEditor::resized()
     zoneFalloffLabel.setBounds(falloffCell.removeFromTop(17));
     zoneFalloffSlider.setBounds(falloffCell);
 
-    canvas.setBounds(left.reduced(0, 4));
+    canvas.setBounds(left.reduced(0, 2));
 
     auto rightInner = right.reduced(10);
     outputsTitleLabel.setBounds(rightInner.removeFromTop(28));
-    auto bridgeArea = rightInner.removeFromBottom(38);
+    auto bridgeArea = rightInner.removeFromBottom(44);
     bridgeLabel.setBounds(bridgeArea);
     const int stripHeight = juce::jmax(62, rightInner.getHeight() / motion::kNumOutputs);
     for (int i = 0; i < motion::kNumOutputs; ++i)
@@ -620,18 +670,34 @@ void MotionEngineAudioProcessorEditor::timerCallback()
     const auto snapshot = processor.getMotionCore().getSnapshot();
     const auto bridge = processor.getBridge().getStatus();
 
+    int mappedCount = 0;
     for (int i = 0; i < motion::kNumOutputs; ++i)
+    {
         if (auto* strip = outputStrips[static_cast<size_t>(i)].get())
             strip->update(snapshot, bridge.slots[static_cast<size_t>(i)]);
+        if (bridge.slots[static_cast<size_t>(i)].mapped)
+            ++mappedCount;
+    }
 
     const int model = static_cast<int>(processor.parameters.getRawParameterValue("model")->load());
     if (model != displayedModel)
         updateModelLabels();
 
-    bridgeLabel.setText(bridge.bridgeSeen
-        ? juce::String::formatted("Bitwig bridge  •  sent %.0f Hz  •  applied %.0f Hz  •  worst %.1f ms  •  aux CV Motion 1–8",
-                                  bridge.sentHz, bridge.appliedHz, bridge.worstGapMs)
-        : "Bitwig bridge not seen  •  aux CV Motion 1–8 remains available",
-        juce::dontSendNotification);
-    bridgeLabel.setColour(juce::Label::textColourId, bridge.bridgeSeen ? muted : juce::Colour(0xffffb08c));
+    if (!bridge.bridgeSeen)
+    {
+        bridgeLabel.setText("Bitwig bridge not seen | aux CV: Motion 1-8 available", juce::dontSendNotification);
+        bridgeLabel.setColour(juce::Label::textColourId, juce::Colour(0xffffb08c));
+    }
+    else if (mappedCount == 0)
+    {
+        bridgeLabel.setText("Bitwig bridge online | no mapped outputs | aux CV: Motion 1-8", juce::dontSendNotification);
+        bridgeLabel.setColour(juce::Label::textColourId, muted);
+    }
+    else
+    {
+        bridgeLabel.setText(juce::String::formatted("Bitwig bridge | sent %.0f Hz | applied %.0f Hz | worst %.1f ms | aux CV: Motion 1-8",
+                                                    bridge.sentHz, bridge.appliedHz, bridge.worstGapMs),
+                            juce::dontSendNotification);
+        bridgeLabel.setColour(juce::Label::textColourId, muted);
+    }
 }
