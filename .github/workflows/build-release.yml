@@ -80,11 +80,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish prototype release
+      - name: Publish v1 alpha release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "prototype-${{ github.run_number }}"
-          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine prototype ${{ github.run_number }}" --notes "Automated Bitwig bridge/performance prototype build from ${{ github.sha }}. See TESTING.md in the release assets."
+          $tag = "v1-alpha-${{ github.run_number }}"
+          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v1 alpha ${{ github.run_number }}" --notes "Automated Windows VST3 + Bitwig bridge build from ${{ github.sha }}. See TESTING.md in the release assets for the v1 test pass."
