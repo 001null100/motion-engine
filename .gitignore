@@ -1,0 +1,9 @@
+build/
+.cache/
+.idea/
+.vscode/
+*.user
+*.suo
+*.VC.db
+bridge/target/
+.DS_Store

@@ -1,0 +1,90 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: motion-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JUCE_VERSION: 9.0.0
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: bridge/pom.xml
+
+      - name: Cache JUCE source
+        id: juce-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/JUCE
+          key: juce-${{ runner.os }}-${{ env.JUCE_VERSION }}
+
+      - name: Fetch JUCE
+        if: steps.juce-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .cache | Out-Null
+          git clone --depth 1 --branch $env:JUCE_VERSION https://github.com/juce-framework/JUCE.git .cache/JUCE
+
+      - name: Configure VST3
+        shell: pwsh
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DMOTION_JUCE_PATH="${{ github.workspace }}/.cache/JUCE"
+
+      - name: Build VST3
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
+
+      - name: Build Bitwig bridge
+        shell: pwsh
+        run: |
+          mvn -B -f bridge/pom.xml package
+          Copy-Item bridge/target/MotionEngineBridge.jar bridge/target/MotionEngineBridge.bwextension
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $dist = Join-Path $PWD "dist"
+          New-Item -ItemType Directory -Force $dist | Out-Null
+          $vst = Get-ChildItem -Path build -Recurse -Directory -Filter "Motion Engine.vst3" | Select-Object -First 1
+          if (-not $vst) { throw "Motion Engine.vst3 was not produced" }
+          Compress-Archive -Path $vst.FullName -DestinationPath "$dist/MotionEngine-Windows-VST3.zip" -Force
+          Copy-Item bridge/target/MotionEngineBridge.bwextension "$dist/MotionEngineBridge.bwextension"
+          Copy-Item docs/TESTING.md "$dist/TESTING.md"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MotionEngine-Windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish prototype release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "prototype-${{ github.run_number }}"
+          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine prototype ${{ github.run_number }}" --notes "Automated Bitwig bridge/performance prototype build from ${{ github.sha }}. See TESTING.md in the release assets."
