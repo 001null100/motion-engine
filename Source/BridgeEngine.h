@@ -1,58 +1,53 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <array>
 #include <atomic>
-#include <chrono>
 #include <mutex>
+#include "MotionEngineCore.h"
 
 class BridgeEngine final : private juce::Thread
 {
 public:
-    struct Status
+    struct SlotStatus
     {
-        bool bridgeSeen = false;
         bool mapped = false;
         bool armed = false;
         juce::String targetName { "None" };
-        double receivedHz = 0.0;
-        double appliedHz = 0.0;
-        double requestedHz = 0.0;
-        double worstGapMs = 0.0;
-        double sentHz = 0.0;
     };
 
-    explicit BridgeEngine(juce::AudioProcessorValueTreeState& state);
+    struct Status
+    {
+        bool bridgeSeen = false;
+        double receivedHz = 0.0;
+        double appliedHz = 0.0;
+        double worstGapMs = 0.0;
+        double sentHz = 0.0;
+        std::array<SlotStatus, motion::kNumOutputs> slots {};
+    };
+
+    explicit BridgeEngine(motion::MotionEngineCore& core);
     ~BridgeEngine() override;
 
     void start();
-    void triggerImpulse();
-    void requestMap();
-    void requestUnmap();
+    void requestMap(int slot);
+    void requestUnmap(int slot);
     Status getStatus() const;
-    float getCurrentValue() const noexcept { return currentValue.load(std::memory_order_relaxed); }
 
 private:
     void run() override;
-    float generateValue(double dt, double timeSeconds, int source, double frequency,
-                        double stiffness, double damping);
-    void sendCommand(const juce::String& command);
-    void sendValue(uint64_t sequence, float value, int requestedRate);
+    void sendCommand(const juce::String& command, int slot);
+    void sendValues(uint64_t sequence, const std::array<float, motion::kNumOutputs>& values);
     void receiveTelemetry();
-    static int rateFromChoice(int choiceIndex);
 
-    juce::AudioProcessorValueTreeState& parameters;
+    motion::MotionEngineCore& core;
     juce::DatagramSocket socket { false };
 
-    std::atomic<bool> pendingImpulse { false };
-    std::atomic<bool> pendingMap { false };
-    std::atomic<bool> pendingUnmap { false };
-    std::atomic<float> currentValue { 0.5f };
+    std::array<std::atomic<bool>, motion::kNumOutputs> pendingMap {};
+    std::array<std::atomic<bool>, motion::kNumOutputs> pendingUnmap {};
 
     mutable std::mutex statusMutex;
     Status status;
-
-    double springPosition = 0.0;
-    double springVelocity = 0.0;
     uint64_t sequence = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BridgeEngine)
