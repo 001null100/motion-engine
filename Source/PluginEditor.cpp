@@ -1,61 +1,503 @@
 #include "PluginEditor.h"
+#include <cmath>
 
 namespace
 {
-void setCaption(juce::Label& label, const juce::String& text)
+const auto bg = juce::Colour(0xff0d1016);
+const auto panel = juce::Colour(0xff151a23);
+const auto panelRaised = juce::Colour(0xff1c2330);
+const auto text = juce::Colour(0xffedf3ff);
+const auto muted = juce::Colour(0xff8f9bad);
+const auto accent = juce::Colour(0xff7de2ff);
+const auto accent2 = juce::Colour(0xffff7edb);
+
+juce::Colour zoneColour(const int index)
 {
-    label.setText(text, juce::dontSendNotification);
-    label.setColour(juce::Label::textColourId, juce::Colour(0xffa8b0bd));
+    static const std::array<juce::Colour, 4> colours {
+        juce::Colour(0xff69d8ff), juce::Colour(0xffff84d8),
+        juce::Colour(0xffffc96b), juce::Colour(0xff8cff9e)
+    };
+    return colours[static_cast<size_t>(juce::jlimit(0, 3, index))];
+}
+
+float distance(juce::Point<float> a, juce::Point<float> b)
+{
+    return a.getDistanceFrom(b);
 }
 }
 
+//==============================================================================
+MotionCanvas::MotionCanvas(MotionEngineAudioProcessor& p) : processor(p)
+{
+    setMouseCursor(juce::MouseCursor::CrosshairCursor);
+}
+
+juce::Rectangle<float> MotionCanvas::worldBounds() const
+{
+    return getLocalBounds().toFloat().reduced(18.0f, 20.0f);
+}
+
+juce::Point<float> MotionCanvas::worldToScreen(const float worldX, const float worldY) const
+{
+    const auto area = worldBounds();
+    return { juce::jmap(worldX, -1.0f, 1.0f, area.getX(), area.getRight()),
+             juce::jmap(worldY, -1.0f, 1.0f, area.getBottom(), area.getY()) };
+}
+
+juce::Point<float> MotionCanvas::screenToWorld(const juce::Point<float> point) const
+{
+    const auto area = worldBounds();
+    return { juce::jlimit(-1.0f, 1.0f, juce::jmap(point.x, area.getX(), area.getRight(), -1.0f, 1.0f)),
+             juce::jlimit(-1.0f, 1.0f, juce::jmap(point.y, area.getBottom(), area.getY(), -1.0f, 1.0f)) };
+}
+
+float MotionCanvas::worldRadiusToPixels(const float radius) const
+{
+    const auto area = worldBounds();
+    return radius * 0.25f * (area.getWidth() + area.getHeight());
+}
+
+void MotionCanvas::paint(juce::Graphics& g)
+{
+    const auto area = getLocalBounds().toFloat();
+    g.setColour(panel);
+    g.fillRoundedRectangle(area, 12.0f);
+
+    const auto world = worldBounds();
+    g.setColour(juce::Colour(0xff202836));
+    for (int i = 1; i < 8; ++i)
+    {
+        const float t = static_cast<float>(i) / 8.0f;
+        const float gx = world.getX() + world.getWidth() * t;
+        const float gy = world.getY() + world.getHeight() * t;
+        g.drawVerticalLine(static_cast<int>(gx), world.getY(), world.getBottom());
+        g.drawHorizontalLine(static_cast<int>(gy), world.getX(), world.getRight());
+    }
+
+    g.setColour(juce::Colour(0xff354052));
+    const auto centre = worldToScreen(0.0f, 0.0f);
+    g.drawLine(centre.x, world.getY(), centre.x, world.getBottom(), 1.4f);
+    g.drawLine(world.getX(), centre.y, world.getRight(), centre.y, 1.4f);
+
+    const auto snapshot = processor.getMotionCore().getSnapshot();
+
+    for (int zone = 0; zone < motion::kNumZones; ++zone)
+    {
+        const auto prefix = "zone" + juce::String(zone + 1);
+        const float zx = processor.parameters.getRawParameterValue(prefix + "X")->load();
+        const float zy = processor.parameters.getRawParameterValue(prefix + "Y")->load();
+        const float radius = processor.parameters.getRawParameterValue(prefix + "Radius")->load();
+        const auto center = worldToScreen(zx, zy);
+        const float pixels = worldRadiusToPixels(radius);
+        const auto ellipse = juce::Rectangle<float>(center.x - pixels, center.y - pixels, pixels * 2.0f, pixels * 2.0f);
+        const auto colour = zoneColour(zone);
+        const float amount = snapshot.zones[static_cast<size_t>(zone)];
+
+        g.setColour(colour.withAlpha(0.055f + amount * 0.12f));
+        g.fillEllipse(ellipse);
+        g.setColour(colour.withAlpha(zone == selectedZone ? 0.95f : 0.42f));
+        g.drawEllipse(ellipse, zone == selectedZone ? 2.0f : 1.0f);
+        g.fillEllipse(juce::Rectangle<float>(center.x - 4.0f, center.y - 4.0f, 8.0f, 8.0f));
+        g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+        g.drawText("Z" + juce::String(zone + 1), static_cast<int>(center.x + 8.0f), static_cast<int>(center.y - 18.0f), 30, 18, juce::Justification::centredLeft);
+    }
+
+    const int model = static_cast<int>(processor.parameters.getRawParameterValue("model")->load());
+    if (model == 1)
+    {
+        const float anchorX = (processor.parameters.getRawParameterValue("motionD")->load() - 0.5f) * 0.9f;
+        const auto anchor = worldToScreen(anchorX, 0.0f);
+        const auto body = worldToScreen(snapshot.x, snapshot.y);
+        g.setColour(accent.withAlpha(0.38f));
+        g.drawLine(anchor.x, anchor.y, body.x, body.y, 1.5f);
+        g.drawEllipse(juce::Rectangle<float>(anchor.x - 5.0f, anchor.y - 5.0f, 10.0f, 10.0f), 1.5f);
+    }
+    else if (model == 2)
+    {
+        const auto pivot = worldToScreen(0.0f, 0.12f);
+        const auto body = worldToScreen(snapshot.x, snapshot.y);
+        g.setColour(accent.withAlpha(0.45f));
+        g.drawLine(pivot.x, pivot.y, body.x, body.y, 1.7f);
+        g.fillEllipse(juce::Rectangle<float>(pivot.x - 4.0f, pivot.y - 4.0f, 8.0f, 8.0f));
+    }
+    else if (model == 0 || model == 6)
+    {
+        g.setColour((model == 6 ? accent2 : accent).withAlpha(0.6f));
+        g.drawEllipse(juce::Rectangle<float>(centre.x - 7.0f, centre.y - 7.0f, 14.0f, 14.0f), 1.5f);
+    }
+
+    if (trail.size() > 1)
+    {
+        juce::Path path;
+        path.startNewSubPath(trail.front());
+        for (size_t i = 1; i < trail.size(); ++i)
+            path.lineTo(trail[i]);
+        g.setColour(accent.withAlpha(0.34f));
+        g.strokePath(path, juce::PathStrokeType(1.6f));
+    }
+
+    const auto body = worldToScreen(snapshot.x, snapshot.y);
+    const auto velocityEnd = body + juce::Point<float>(snapshot.vx, -snapshot.vy) * 18.0f;
+    g.setColour(juce::Colour(0xffffcf73).withAlpha(0.72f));
+    g.drawLine(body.x, body.y, velocityEnd.x, velocityEnd.y, 1.6f);
+
+    const float bodyRadius = 10.0f + snapshot.energy * 4.0f;
+    g.setColour(accent.withAlpha(0.18f));
+    g.fillEllipse(juce::Rectangle<float>(body.x - bodyRadius - 6.0f, body.y - bodyRadius - 6.0f,
+                                         (bodyRadius + 6.0f) * 2.0f, (bodyRadius + 6.0f) * 2.0f));
+    g.setColour(text);
+    g.fillEllipse(juce::Rectangle<float>(body.x - bodyRadius, body.y - bodyRadius, bodyRadius * 2.0f, bodyRadius * 2.0f));
+    g.setColour(accent);
+    g.drawEllipse(juce::Rectangle<float>(body.x - bodyRadius, body.y - bodyRadius, bodyRadius * 2.0f, bodyRadius * 2.0f), 2.0f);
+
+    g.setColour(muted);
+    g.setFont(juce::FontOptions(12.0f));
+    g.drawText("drag body = throw  •  drag Zone center = move  •  drag Zone ring = radius  •  double-click = HIT",
+               world.toNearestInt().removeFromBottom(22), juce::Justification::centredLeft);
+}
+
+void MotionCanvas::tick()
+{
+    const auto snapshot = processor.getMotionCore().getSnapshot();
+    const auto point = worldToScreen(snapshot.x, snapshot.y);
+    if (trail.empty() || trail.back().getDistanceFrom(point) > 1.0f)
+        trail.push_back(point);
+    if (trail.size() > 96)
+        trail.erase(trail.begin(), trail.begin() + static_cast<std::ptrdiff_t>(trail.size() - 96));
+    repaint();
+}
+
+void MotionCanvas::setSelectedZone(const int zone)
+{
+    selectedZone = juce::jlimit(0, motion::kNumZones - 1, zone);
+    repaint();
+}
+
+void MotionCanvas::setParameterPlain(const juce::String& id, const float value)
+{
+    if (auto* parameter = processor.parameters.getParameter(id))
+        parameter->setValueNotifyingHost(parameter->convertTo0to1(value));
+}
+
+void MotionCanvas::beginZoneGesture()
+{
+    if (dragZone < 0)
+        return;
+    const auto prefix = "zone" + juce::String(dragZone + 1);
+    if (dragMode == DragMode::zoneMove)
+    {
+        processor.parameters.getParameter(prefix + "X")->beginChangeGesture();
+        processor.parameters.getParameter(prefix + "Y")->beginChangeGesture();
+    }
+    else if (dragMode == DragMode::zoneRadius)
+    {
+        processor.parameters.getParameter(prefix + "Radius")->beginChangeGesture();
+    }
+}
+
+void MotionCanvas::endZoneGesture()
+{
+    if (dragZone < 0)
+        return;
+    const auto prefix = "zone" + juce::String(dragZone + 1);
+    if (dragMode == DragMode::zoneMove)
+    {
+        processor.parameters.getParameter(prefix + "X")->endChangeGesture();
+        processor.parameters.getParameter(prefix + "Y")->endChangeGesture();
+    }
+    else if (dragMode == DragMode::zoneRadius)
+    {
+        processor.parameters.getParameter(prefix + "Radius")->endChangeGesture();
+    }
+}
+
+void MotionCanvas::mouseDown(const juce::MouseEvent& event)
+{
+    const auto mouse = event.position;
+    const auto snapshot = processor.getMotionCore().getSnapshot();
+    const auto body = worldToScreen(snapshot.x, snapshot.y);
+    lastDragWorld = screenToWorld(mouse);
+    lastDragTimeMs = juce::Time::getMillisecondCounterHiRes();
+    flickVelocity = {};
+
+    if (distance(mouse, body) <= 20.0f)
+    {
+        dragMode = DragMode::body;
+        processor.getMotionCore().beginDrag(lastDragWorld.x, lastDragWorld.y);
+        return;
+    }
+
+    for (int zone = 0; zone < motion::kNumZones; ++zone)
+    {
+        const auto prefix = "zone" + juce::String(zone + 1);
+        const float zx = processor.parameters.getRawParameterValue(prefix + "X")->load();
+        const float zy = processor.parameters.getRawParameterValue(prefix + "Y")->load();
+        const float radius = processor.parameters.getRawParameterValue(prefix + "Radius")->load();
+        const auto center = worldToScreen(zx, zy);
+        const float pixels = worldRadiusToPixels(radius);
+        const float dist = distance(mouse, center);
+
+        if (dist <= 15.0f || std::abs(dist - pixels) <= 10.0f)
+        {
+            dragZone = zone;
+            selectedZone = zone;
+            dragMode = dist <= 15.0f ? DragMode::zoneMove : DragMode::zoneRadius;
+            if (onZoneSelected) onZoneSelected(zone);
+            beginZoneGesture();
+            return;
+        }
+    }
+}
+
+void MotionCanvas::mouseDrag(const juce::MouseEvent& event)
+{
+    const auto world = screenToWorld(event.position);
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    const double dt = juce::jmax(1.0, now - lastDragTimeMs) * 0.001;
+    flickVelocity = { static_cast<float>((world.x - lastDragWorld.x) / dt),
+                      static_cast<float>((world.y - lastDragWorld.y) / dt) };
+    lastDragWorld = world;
+    lastDragTimeMs = now;
+
+    if (dragMode == DragMode::body)
+    {
+        processor.getMotionCore().dragTo(world.x, world.y);
+    }
+    else if (dragZone >= 0 && dragMode == DragMode::zoneMove)
+    {
+        const auto prefix = "zone" + juce::String(dragZone + 1);
+        setParameterPlain(prefix + "X", world.x);
+        setParameterPlain(prefix + "Y", world.y);
+    }
+    else if (dragZone >= 0 && dragMode == DragMode::zoneRadius)
+    {
+        const auto prefix = "zone" + juce::String(dragZone + 1);
+        const float zx = processor.parameters.getRawParameterValue(prefix + "X")->load();
+        const float zy = processor.parameters.getRawParameterValue(prefix + "Y")->load();
+        setParameterPlain(prefix + "Radius", juce::jlimit(0.08f, 1.5f, std::hypot(world.x - zx, world.y - zy)));
+    }
+}
+
+void MotionCanvas::mouseUp(const juce::MouseEvent&)
+{
+    if (dragMode == DragMode::body)
+        processor.getMotionCore().endDrag(flickVelocity.x, flickVelocity.y);
+    else
+        endZoneGesture();
+
+    dragMode = DragMode::none;
+    dragZone = -1;
+}
+
+void MotionCanvas::mouseDoubleClick(const juce::MouseEvent&)
+{
+    processor.getMotionCore().triggerHit();
+}
+
+//==============================================================================
+OutputStrip::OutputStrip(MotionEngineAudioProcessor& p, const int slot) : processor(p), index(slot)
+{
+    indexLabel.setText(juce::String(index + 1), juce::dontSendNotification);
+    indexLabel.setFont(juce::FontOptions(16.0f, juce::Font::bold));
+    indexLabel.setColour(juce::Label::textColourId, accent);
+    indexLabel.setJustificationType(juce::Justification::centred);
+
+    sourceBox.addItemList(motion::MotionEngineCore::sourceNames(), 1);
+    curveBox.addItemList(motion::MotionEngineCore::curveNames(), 1);
+    configureCompactSlider(minSlider);
+    configureCompactSlider(maxSlider);
+    configureCompactSlider(smoothSlider);
+    minSlider.setTextValueSuffix(" min");
+    maxSlider.setTextValueSuffix(" max");
+    smoothSlider.setTextValueSuffix(" ms");
+
+    targetLabel.setColour(juce::Label::textColourId, muted);
+    targetLabel.setFont(juce::FontOptions(11.5f));
+    targetLabel.setJustificationType(juce::Justification::centredLeft);
+
+    for (auto* component : { static_cast<juce::Component*>(&indexLabel), static_cast<juce::Component*>(&sourceBox),
+                             static_cast<juce::Component*>(&minSlider), static_cast<juce::Component*>(&maxSlider),
+                             static_cast<juce::Component*>(&curveBox), static_cast<juce::Component*>(&smoothSlider),
+                             static_cast<juce::Component*>(&mapButton), static_cast<juce::Component*>(&clearButton),
+                             static_cast<juce::Component*>(&targetLabel) })
+        addAndMakeVisible(component);
+
+    const auto prefix = "out" + juce::String(index + 1);
+    sourceAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(processor.parameters, prefix + "Source", sourceBox);
+    minAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, prefix + "Min", minSlider);
+    maxAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, prefix + "Max", maxSlider);
+    curveAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(processor.parameters, prefix + "Curve", curveBox);
+    smoothAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, prefix + "Smooth", smoothSlider);
+
+    mapButton.onClick = [this] { processor.getBridge().requestMap(index); };
+    clearButton.onClick = [this] { processor.getBridge().requestUnmap(index); };
+}
+
+void OutputStrip::configureCompactSlider(juce::Slider& slider)
+{
+    slider.setSliderStyle(juce::Slider::LinearHorizontal);
+    slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 18);
+    slider.setColour(juce::Slider::trackColourId, accent.withAlpha(0.45f));
+    slider.setColour(juce::Slider::thumbColourId, text);
+    slider.setColour(juce::Slider::textBoxTextColourId, text);
+    slider.setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+}
+
+void OutputStrip::paint(juce::Graphics& g)
+{
+    const auto bounds = getLocalBounds().toFloat();
+    g.setColour(panelRaised);
+    g.fillRoundedRectangle(bounds, 7.0f);
+    g.setColour(juce::Colour(0xff2a3444));
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 7.0f, 1.0f);
+
+    const auto meter = juce::Rectangle<float>(2.0f, 5.0f, 4.0f, bounds.getHeight() - 10.0f);
+    g.setColour(juce::Colour(0xff2b3544));
+    g.fillRoundedRectangle(meter, 2.0f);
+    g.setColour(accent);
+    const float fill = meter.getHeight() * juce::jlimit(0.0f, 1.0f, currentValue);
+    g.fillRoundedRectangle(meter.withTrimmedTop(meter.getHeight() - fill), 2.0f);
+}
+
+void OutputStrip::resized()
+{
+    auto area = getLocalBounds().reduced(8, 5);
+    auto number = area.removeFromLeft(24);
+    indexLabel.setBounds(number);
+
+    auto top = area.removeFromTop(28);
+    sourceBox.setBounds(top.removeFromLeft(155).reduced(2, 1));
+    minSlider.setBounds(top.removeFromLeft(88).reduced(2, 1));
+    maxSlider.setBounds(top.removeFromLeft(88).reduced(2, 1));
+    mapButton.setBounds(top.removeFromRight(54).reduced(2, 1));
+    clearButton.setBounds(top.removeFromRight(28).reduced(2, 1));
+
+    auto bottom = area.removeFromBottom(27);
+    curveBox.setBounds(bottom.removeFromLeft(120).reduced(2, 1));
+    smoothSlider.setBounds(bottom.removeFromLeft(130).reduced(2, 1));
+    targetLabel.setBounds(bottom.reduced(5, 0));
+}
+
+void OutputStrip::update(const motion::MotionEngineCore::Snapshot& snapshot, const BridgeEngine::SlotStatus& status)
+{
+    currentValue = snapshot.outputs[static_cast<size_t>(index)];
+    if (status.armed)
+    {
+        targetLabel.setText("move target parameter…", juce::dontSendNotification);
+        targetLabel.setColour(juce::Label::textColourId, juce::Colour(0xffffcf73));
+        mapButton.setButtonText("ARMED");
+    }
+    else if (status.mapped)
+    {
+        targetLabel.setText(status.targetName, juce::dontSendNotification);
+        targetLabel.setColour(juce::Label::textColourId, text);
+        mapButton.setButtonText("MAP");
+    }
+    else
+    {
+        targetLabel.setText("unmapped  •  aux: Motion " + juce::String(index + 1), juce::dontSendNotification);
+        targetLabel.setColour(juce::Label::textColourId, muted);
+        mapButton.setButtonText("MAP");
+    }
+    repaint();
+}
+
+//==============================================================================
 MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineAudioProcessor& p)
-    : AudioProcessorEditor(&p), processor(p)
+    : AudioProcessorEditor(&p), processor(p), canvas(p)
 {
-    setSize(720, 500);
+    setSize(1220, 780);
+    setResizable(true, true);
+    setResizeLimits(1040, 680, 1800, 1100);
 
-    titleLabel.setText("MOTION ENGINE / BITWIG BRIDGE SPIKE", juce::dontSendNotification);
-    titleLabel.setFont(juce::FontOptions(22.0f, juce::Font::bold));
-    titleLabel.setColour(juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible(titleLabel);
+    titleLabel.setText("MOTION ENGINE", juce::dontSendNotification);
+    titleLabel.setFont(juce::FontOptions(24.0f, juce::Font::bold));
+    titleLabel.setColour(juce::Label::textColourId, text);
+    subtitleLabel.setText("physics-driven modulation", juce::dontSendNotification);
+    subtitleLabel.setFont(juce::FontOptions(13.0f));
+    subtitleLabel.setColour(juce::Label::textColourId, muted);
+    outputsTitleLabel.setText("MOTION OUTPUTS", juce::dontSendNotification);
+    outputsTitleLabel.setFont(juce::FontOptions(14.0f, juce::Font::bold));
+    outputsTitleLabel.setColour(juce::Label::textColourId, text);
+    bridgeLabel.setFont(juce::FontOptions(11.5f));
+    bridgeLabel.setColour(juce::Label::textColourId, muted);
 
-    for (auto* c : { &sourceBox, &rateBox })
-        addAndMakeVisible(c);
-    sourceBox.addItemList(juce::StringArray { "Spring", "Sine", "Ramp", "Step", "Impulse" }, 1);
-    rateBox.addItemList(juce::StringArray { "30 Hz", "60 Hz", "120 Hz", "250 Hz", "500 Hz", "1000 Hz" }, 1);
+    modelBox.addItemList(motion::MotionEngineCore::modelNames(), 1);
+    constraintBox.addItemList(motion::MotionEngineCore::constraintNames(), 1);
+    for (int zone = 0; zone < motion::kNumZones; ++zone)
+        zoneBox.addItem("Zone " + juce::String(zone + 1), zone + 1);
 
-    configureSlider(frequencySlider, " Hz");
-    configureSlider(stiffnessSlider);
+    for (auto* component : { static_cast<juce::Component*>(&titleLabel), static_cast<juce::Component*>(&subtitleLabel),
+                             static_cast<juce::Component*>(&outputsTitleLabel), static_cast<juce::Component*>(&bridgeLabel),
+                             static_cast<juce::Component*>(&modelBox), static_cast<juce::Component*>(&constraintBox),
+                             static_cast<juce::Component*>(&hitButton), static_cast<juce::Component*>(&resetButton),
+                             static_cast<juce::Component*>(&canvas), static_cast<juce::Component*>(&zoneBox),
+                             static_cast<juce::Component*>(&zoneRadiusSlider), static_cast<juce::Component*>(&zoneFalloffSlider) })
+        addAndMakeVisible(component);
+
+    configureSlider(timeSlider, "×");
+    configureSlider(energySlider);
     configureSlider(dampingSlider);
+    configureSlider(audioKickSlider);
+    configureLabel(timeLabel, "Time");
+    configureLabel(energyLabel, "Energy");
+    configureLabel(dampingLabel, "Damping");
+    configureLabel(audioKickLabel, "Audio Kick");
 
-    setCaption(sourceLabel, "Debug source");
-    setCaption(rateLabel, "Requested bridge rate");
-    setCaption(frequencyLabel, "Generator frequency");
-    setCaption(stiffnessLabel, "Spring stiffness");
-    setCaption(dampingLabel, "Spring damping");
+    for (int i = 0; i < 4; ++i)
+    {
+        configureSlider(motionSliders[static_cast<size_t>(i)]);
+        configureLabel(motionLabels[static_cast<size_t>(i)], "Motion");
+    }
 
-    for (auto* l : { &sourceLabel, &rateLabel, &frequencyLabel, &stiffnessLabel, &dampingLabel,
-                     &targetLabel, &telemetryLabel, &instructionLabel })
-        addAndMakeVisible(l);
+    configureSlider(zoneRadiusSlider);
+    configureSlider(zoneFalloffSlider);
+    configureLabel(zoneLabel, "Zone edit");
+    configureLabel(zoneRadiusLabel, "Radius");
+    configureLabel(zoneFalloffLabel, "Falloff");
 
-    for (auto* b : { &kickButton, &mapButton, &unmapButton })
-        addAndMakeVisible(b);
+    for (auto* component : { static_cast<juce::Component*>(&timeSlider), static_cast<juce::Component*>(&energySlider),
+                             static_cast<juce::Component*>(&dampingSlider), static_cast<juce::Component*>(&audioKickSlider),
+                             static_cast<juce::Component*>(&timeLabel), static_cast<juce::Component*>(&energyLabel),
+                             static_cast<juce::Component*>(&dampingLabel), static_cast<juce::Component*>(&audioKickLabel),
+                             static_cast<juce::Component*>(&zoneLabel), static_cast<juce::Component*>(&zoneRadiusLabel),
+                             static_cast<juce::Component*>(&zoneFalloffLabel) })
+        addAndMakeVisible(component);
 
-    kickButton.onClick = [this] { processor.getBridge().triggerImpulse(); };
-    mapButton.onClick = [this] { processor.getBridge().requestMap(); };
-    unmapButton.onClick = [this] { processor.getBridge().requestUnmap(); };
+    for (int i = 0; i < 4; ++i)
+    {
+        addAndMakeVisible(motionSliders[static_cast<size_t>(i)]);
+        addAndMakeVisible(motionLabels[static_cast<size_t>(i)]);
+    }
 
-    instructionLabel.setText("Press MAP TARGET, then actually move/drag the parameter you want. Hovering alone will not map. UNMAP also restores Bitwig automation control.", juce::dontSendNotification);
-    instructionLabel.setColour(juce::Label::textColourId, juce::Colour(0xff8d96a5));
-    instructionLabel.setJustificationType(juce::Justification::centredLeft);
+    modelAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(processor.parameters, "model", modelBox);
+    constraintAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(processor.parameters, "constraint", constraintBox);
+    timeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "timeScale", timeSlider);
+    energyAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "energy", energySlider);
+    dampingAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "globalDamping", dampingSlider);
+    audioKickAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "audioKick", audioKickSlider);
 
-    sourceAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(processor.parameters, "source", sourceBox);
-    rateAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(processor.parameters, "bridgeRate", rateBox);
-    frequencyAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "frequency", frequencySlider);
-    stiffnessAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "stiffness", stiffnessSlider);
-    dampingAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "damping", dampingSlider);
+    for (int i = 0; i < 4; ++i)
+        motionAttachments[static_cast<size_t>(i)] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, "motion" + juce::String::charToString(static_cast<juce::juce_wchar>('A' + i)), motionSliders[static_cast<size_t>(i)]);
 
-    startTimerHz(20);
+    for (int i = 0; i < motion::kNumOutputs; ++i)
+    {
+        outputStrips[static_cast<size_t>(i)] = std::make_unique<OutputStrip>(processor, i);
+        addAndMakeVisible(*outputStrips[static_cast<size_t>(i)]);
+    }
+
+    hitButton.onClick = [this] { processor.getMotionCore().triggerHit(); };
+    resetButton.onClick = [this] { processor.getMotionCore().reset(); };
+    modelBox.onChange = [this] { updateModelLabels(); };
+    zoneBox.onChange = [this] { bindSelectedZone(zoneBox.getSelectedItemIndex()); };
+    canvas.onZoneSelected = [this](const int zone)
+    {
+        zoneBox.setSelectedItemIndex(zone, juce::sendNotificationSync);
+    };
+
+    zoneBox.setSelectedItemIndex(0, juce::sendNotificationSync);
+    updateModelLabels();
+    startTimerHz(30);
 }
 
 MotionEngineAudioProcessorEditor::~MotionEngineAudioProcessorEditor() = default;
@@ -63,64 +505,126 @@ MotionEngineAudioProcessorEditor::~MotionEngineAudioProcessorEditor() = default;
 void MotionEngineAudioProcessorEditor::configureSlider(juce::Slider& slider, const juce::String& suffix)
 {
     slider.setSliderStyle(juce::Slider::LinearHorizontal);
-    slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 88, 24);
+    slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 20);
     slider.setTextValueSuffix(suffix);
-    addAndMakeVisible(slider);
+    slider.setColour(juce::Slider::trackColourId, accent.withAlpha(0.5f));
+    slider.setColour(juce::Slider::thumbColourId, text);
+    slider.setColour(juce::Slider::textBoxTextColourId, text);
+    slider.setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+}
+
+void MotionEngineAudioProcessorEditor::configureLabel(juce::Label& label, const juce::String& value)
+{
+    label.setText(value, juce::dontSendNotification);
+    label.setFont(juce::FontOptions(11.5f, juce::Font::bold));
+    label.setColour(juce::Label::textColourId, muted);
+    label.setJustificationType(juce::Justification::centredLeft);
 }
 
 void MotionEngineAudioProcessorEditor::paint(juce::Graphics& g)
 {
-    g.fillAll(juce::Colour(0xff111419));
-    auto area = getLocalBounds().toFloat().reduced(18.0f);
-    g.setColour(juce::Colour(0xff1b2028));
-    g.fillRoundedRectangle(area.withTrimmedTop(54.0f), 10.0f);
-
-    const float value = processor.getBridge().getCurrentValue();
-    const auto meter = juce::Rectangle<float>(36.0f, 400.0f, 648.0f, 14.0f);
-    g.setColour(juce::Colour(0xff262c36));
-    g.fillRoundedRectangle(meter, 7.0f);
-    g.setColour(juce::Colour(0xffd8e7ff));
-    g.fillRoundedRectangle(meter.withWidth(meter.getWidth() * value), 7.0f);
+    g.fillAll(bg);
+    auto right = getLocalBounds().toFloat().reduced(10.0f);
+    right.removeFromLeft(690.0f);
+    g.setColour(panel);
+    g.fillRoundedRectangle(right, 12.0f);
 }
 
 void MotionEngineAudioProcessorEditor::resized()
 {
-    titleLabel.setBounds(24, 14, 620, 34);
+    auto area = getLocalBounds().reduced(14);
+    auto header = area.removeFromTop(46);
+    titleLabel.setBounds(header.removeFromLeft(210));
+    subtitleLabel.setBounds(header.removeFromLeft(250).withTrimmedTop(5));
 
-    int y = 76;
-    const int labelX = 36;
-    const int controlX = 220;
-    const int rowH = 42;
-    const int controlW = 450;
+    auto right = area.removeFromRight(510);
+    area.removeFromRight(12);
+    auto left = area;
 
-    sourceLabel.setBounds(labelX, y, 170, 28); sourceBox.setBounds(controlX, y, controlW, 28); y += rowH;
-    rateLabel.setBounds(labelX, y, 170, 28); rateBox.setBounds(controlX, y, controlW, 28); y += rowH;
-    frequencyLabel.setBounds(labelX, y, 170, 28); frequencySlider.setBounds(controlX, y, controlW, 28); y += rowH;
-    stiffnessLabel.setBounds(labelX, y, 170, 28); stiffnessSlider.setBounds(controlX, y, controlW, 28); y += rowH;
-    dampingLabel.setBounds(labelX, y, 170, 28); dampingSlider.setBounds(controlX, y, controlW, 28); y += rowH + 8;
+    auto controls = left.removeFromTop(190);
+    auto firstRow = controls.removeFromTop(36);
+    modelBox.setBounds(firstRow.removeFromLeft(190).reduced(2));
+    constraintBox.setBounds(firstRow.removeFromLeft(160).reduced(2));
+    hitButton.setBounds(firstRow.removeFromLeft(78).reduced(3));
+    resetButton.setBounds(firstRow.removeFromLeft(86).reduced(3));
 
-    kickButton.setBounds(36, y, 160, 32);
-    mapButton.setBounds(210, y, 180, 32);
-    unmapButton.setBounds(400, y, 120, 32);
+    auto globalRow = controls.removeFromTop(48);
+    const int globalWidth = globalRow.getWidth() / 4;
+    std::array<juce::Slider*, 4> globalSliders { &timeSlider, &energySlider, &dampingSlider, &audioKickSlider };
+    std::array<juce::Label*, 4> globalLabels { &timeLabel, &energyLabel, &dampingLabel, &audioKickLabel };
+    for (int i = 0; i < 4; ++i)
+    {
+        auto cell = globalRow.removeFromLeft(globalWidth).reduced(2);
+        globalLabels[static_cast<size_t>(i)]->setBounds(cell.removeFromTop(17));
+        globalSliders[static_cast<size_t>(i)]->setBounds(cell);
+    }
 
-    targetLabel.setBounds(36, y + 46, 648, 26);
-    telemetryLabel.setBounds(36, y + 72, 648, 26);
-    instructionLabel.setBounds(36, 428, 648, 52);
+    auto motionRow = controls.removeFromTop(54);
+    const int motionWidth = motionRow.getWidth() / 4;
+    for (int i = 0; i < 4; ++i)
+    {
+        auto cell = motionRow.removeFromLeft(motionWidth).reduced(2);
+        motionLabels[static_cast<size_t>(i)].setBounds(cell.removeFromTop(17));
+        motionSliders[static_cast<size_t>(i)].setBounds(cell);
+    }
+
+    auto zoneRow = controls.removeFromTop(48);
+    auto zoneCell = zoneRow.removeFromLeft(140).reduced(2);
+    zoneLabel.setBounds(zoneCell.removeFromTop(17));
+    zoneBox.setBounds(zoneCell);
+    auto radiusCell = zoneRow.removeFromLeft(220).reduced(2);
+    zoneRadiusLabel.setBounds(radiusCell.removeFromTop(17));
+    zoneRadiusSlider.setBounds(radiusCell);
+    auto falloffCell = zoneRow.removeFromLeft(220).reduced(2);
+    zoneFalloffLabel.setBounds(falloffCell.removeFromTop(17));
+    zoneFalloffSlider.setBounds(falloffCell);
+
+    canvas.setBounds(left.reduced(0, 4));
+
+    auto rightInner = right.reduced(10);
+    outputsTitleLabel.setBounds(rightInner.removeFromTop(28));
+    auto bridgeArea = rightInner.removeFromBottom(38);
+    bridgeLabel.setBounds(bridgeArea);
+    const int stripHeight = juce::jmax(62, rightInner.getHeight() / motion::kNumOutputs);
+    for (int i = 0; i < motion::kNumOutputs; ++i)
+        outputStrips[static_cast<size_t>(i)]->setBounds(rightInner.removeFromTop(stripHeight).reduced(0, 3));
+}
+
+void MotionEngineAudioProcessorEditor::updateModelLabels()
+{
+    const int model = static_cast<int>(processor.parameters.getRawParameterValue("model")->load());
+    displayedModel = model;
+    const auto names = motion::MotionEngineCore::controlNamesForModel(model);
+    for (int i = 0; i < 4; ++i)
+        motionLabels[static_cast<size_t>(i)].setText(names[static_cast<size_t>(i)], juce::dontSendNotification);
+}
+
+void MotionEngineAudioProcessorEditor::bindSelectedZone(const int zone)
+{
+    const int safeZone = juce::jlimit(0, motion::kNumZones - 1, zone);
+    canvas.setSelectedZone(safeZone);
+    const auto prefix = "zone" + juce::String(safeZone + 1);
+    zoneRadiusAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, prefix + "Radius", zoneRadiusSlider);
+    zoneFalloffAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.parameters, prefix + "Falloff", zoneFalloffSlider);
 }
 
 void MotionEngineAudioProcessorEditor::timerCallback()
 {
-    const auto s = processor.getBridge().getStatus();
-    const juce::String bridgeText = s.bridgeSeen ? "Bridge online" : "Bridge not seen";
-    const juce::String mappingText = s.mapped ? "mapped" : (s.armed ? "waiting for parameter movement" : "unmapped");
+    canvas.tick();
+    const auto snapshot = processor.getMotionCore().getSnapshot();
+    const auto bridge = processor.getBridge().getStatus();
 
-    targetLabel.setText(bridgeText + "  |  " + mappingText + "  |  Target: " + s.targetName,
-                        juce::dontSendNotification);
-    targetLabel.setColour(juce::Label::textColourId, s.bridgeSeen ? juce::Colour(0xffd8e7ff) : juce::Colour(0xffffb8a8));
+    for (int i = 0; i < motion::kNumOutputs; ++i)
+        outputStrips[static_cast<size_t>(i)]->update(snapshot, bridge.slots[static_cast<size_t>(i)]);
 
-    telemetryLabel.setText(juce::String::formatted("sent %.1f Hz  |  bridge rx %.1f Hz  |  applied %.1f Hz  |  requested %.0f Hz  |  worst gap %.2f ms",
-                                                   s.sentHz, s.receivedHz, s.appliedHz, s.requestedHz, s.worstGapMs),
-                           juce::dontSendNotification);
-    telemetryLabel.setColour(juce::Label::textColourId, juce::Colour(0xffa8b0bd));
-    repaint();
+    const int model = static_cast<int>(processor.parameters.getRawParameterValue("model")->load());
+    if (model != displayedModel)
+        updateModelLabels();
+
+    bridgeLabel.setText(bridge.bridgeSeen
+        ? juce::String::formatted("Bitwig bridge  •  sent %.0f Hz  •  applied %.0f Hz  •  worst %.1f ms  •  aux CV Motion 1–8",
+                                  bridge.sentHz, bridge.appliedHz, bridge.worstGapMs)
+        : "Bitwig bridge not seen  •  aux CV Motion 1–8 remains available",
+        juce::dontSendNotification);
+    bridgeLabel.setColour(juce::Label::textColourId, bridge.bridgeSeen ? muted : juce::Colour(0xffffb08c));
 }
