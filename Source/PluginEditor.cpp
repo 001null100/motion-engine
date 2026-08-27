@@ -406,9 +406,9 @@ void OutputStrip::update(const motion::MotionEngineCore::Snapshot& snapshot, con
 MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineAudioProcessor& p)
     : AudioProcessorEditor(&p), processor(p), canvas(p)
 {
-    setSize(1220, 780);
-    setResizable(true, true);
-    setResizeLimits(1040, 680, 1800, 1100);
+    // Do not size the editor until every child that resized() touches exists.
+    // Component::setSize() calls resized() synchronously, and doing this earlier
+    // dereferenced the still-null outputStrips array during editor creation.
 
     titleLabel.setText("MOTION ENGINE", juce::dontSendNotification);
     titleLabel.setFont(juce::FontOptions(24.0f, juce::Font::bold));
@@ -497,6 +497,11 @@ MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineA
 
     zoneBox.setSelectedItemIndex(0, juce::sendNotificationSync);
     updateModelLabels();
+
+    // All children now exist, so resize callbacks are safe.
+    setResizable(true, true);
+    setResizeLimits(1040, 680, 1800, 1100);
+    setSize(1220, 780);
     startTimerHz(30);
 }
 
@@ -587,7 +592,8 @@ void MotionEngineAudioProcessorEditor::resized()
     bridgeLabel.setBounds(bridgeArea);
     const int stripHeight = juce::jmax(62, rightInner.getHeight() / motion::kNumOutputs);
     for (int i = 0; i < motion::kNumOutputs; ++i)
-        outputStrips[static_cast<size_t>(i)]->setBounds(rightInner.removeFromTop(stripHeight).reduced(0, 3));
+        if (auto* strip = outputStrips[static_cast<size_t>(i)].get())
+            strip->setBounds(rightInner.removeFromTop(stripHeight).reduced(0, 3));
 }
 
 void MotionEngineAudioProcessorEditor::updateModelLabels()
@@ -615,7 +621,8 @@ void MotionEngineAudioProcessorEditor::timerCallback()
     const auto bridge = processor.getBridge().getStatus();
 
     for (int i = 0; i < motion::kNumOutputs; ++i)
-        outputStrips[static_cast<size_t>(i)]->update(snapshot, bridge.slots[static_cast<size_t>(i)]);
+        if (auto* strip = outputStrips[static_cast<size_t>(i)].get())
+            strip->update(snapshot, bridge.slots[static_cast<size_t>(i)]);
 
     const int model = static_cast<int>(processor.parameters.getRawParameterValue("model")->load());
     if (model != displayedModel)
