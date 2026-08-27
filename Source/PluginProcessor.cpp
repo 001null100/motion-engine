@@ -1,22 +1,18 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-namespace
-{
-juce::AudioProcessor::BusesProperties makeBuses()
-{
-    auto buses = juce::AudioProcessor::BusesProperties()
-        .withInput("Input", juce::AudioChannelSet::stereo(), true)
-        .withOutput("Output", juce::AudioChannelSet::stereo(), true);
-
-    for (int i = 0; i < motion::kNumOutputs; ++i)
-        buses = buses.withOutput("Motion " + juce::String(i + 1), juce::AudioChannelSet::mono(), true);
-    return buses;
-}
-}
-
 MotionEngineAudioProcessor::MotionEngineAudioProcessor()
-    : AudioProcessor(makeBuses()),
+    : AudioProcessor(BusesProperties()
+        .withInput("Input", juce::AudioChannelSet::stereo(), true)
+        .withOutput("Output", juce::AudioChannelSet::stereo(), true)
+        .withOutput("Motion 1", juce::AudioChannelSet::mono(), true)
+        .withOutput("Motion 2", juce::AudioChannelSet::mono(), true)
+        .withOutput("Motion 3", juce::AudioChannelSet::mono(), true)
+        .withOutput("Motion 4", juce::AudioChannelSet::mono(), true)
+        .withOutput("Motion 5", juce::AudioChannelSet::mono(), true)
+        .withOutput("Motion 6", juce::AudioChannelSet::mono(), true)
+        .withOutput("Motion 7", juce::AudioChannelSet::mono(), true)
+        .withOutput("Motion 8", juce::AudioChannelSet::mono(), true)),
       parameters(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
     motionCore = std::make_unique<motion::MotionEngineCore>(parameters);
@@ -77,18 +73,18 @@ void MotionEngineAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     }
 
     const int samples = buffer.getNumSamples();
-    for (int output = 0; output < motion::kNumOutputs; ++output)
+    for (int outputIndex = 0; outputIndex < motion::kNumOutputs; ++outputIndex)
     {
-        if (output + 1 >= getBusCount(false))
+        if (outputIndex + 1 >= getBusCount(false))
             break;
 
-        auto aux = getBusBuffer(buffer, false, output + 1);
+        auto aux = getBusBuffer(buffer, false, outputIndex + 1);
         if (aux.getNumChannels() == 0)
             continue;
 
         auto* data = aux.getWritePointer(0);
-        const float start = previousOutputs[static_cast<size_t>(output)];
-        const float end = currentOutputs[static_cast<size_t>(output)];
+        const float start = previousOutputs[static_cast<size_t>(outputIndex)];
+        const float end = currentOutputs[static_cast<size_t>(outputIndex)];
         for (int sample = 0; sample < samples; ++sample)
         {
             const float t = samples > 1 ? static_cast<float>(sample) / static_cast<float>(samples - 1) : 1.0f;
@@ -139,11 +135,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout MotionEngineAudioProcessor::
     }
 
     constexpr std::array<int, motion::kNumOutputs> defaultSources { 0, 1, 4, 8, 9, 10, 11, 12 };
-    for (int output = 0; output < motion::kNumOutputs; ++output)
+    for (int outputIndex = 0; outputIndex < motion::kNumOutputs; ++outputIndex)
     {
-        const auto prefix = "out" + juce::String(output + 1);
-        const auto label = "Motion " + juce::String(output + 1);
-        layout.add(std::make_unique<juce::AudioParameterChoice>(prefix + "Source", label + " Source", motion::MotionEngineCore::sourceNames(), defaultSources[static_cast<size_t>(output)]));
+        const auto prefix = "out" + juce::String(outputIndex + 1);
+        const auto label = "Motion " + juce::String(outputIndex + 1);
+        layout.add(std::make_unique<juce::AudioParameterChoice>(prefix + "Source", label + " Source", motion::MotionEngineCore::sourceNames(), defaultSources[static_cast<size_t>(outputIndex)]));
         layout.add(std::make_unique<juce::AudioParameterFloat>(prefix + "Min", label + " Minimum", 0.0f, 1.0f, 0.0f));
         layout.add(std::make_unique<juce::AudioParameterFloat>(prefix + "Max", label + " Maximum", 0.0f, 1.0f, 1.0f));
         layout.add(std::make_unique<juce::AudioParameterChoice>(prefix + "Curve", label + " Curve", motion::MotionEngineCore::curveNames(), 1));
