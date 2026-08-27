@@ -56,6 +56,10 @@ target_compile_definitions(MotionEngine PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
 )
 
+if(MSVC)
+    target_compile_options(MotionEngine PRIVATE /utf-8)
+endif()
+
 target_link_libraries(MotionEngine PRIVATE
     juce::juce_audio_utils
     juce::juce_dsp
