@@ -1,155 +1,180 @@
-# Motion Engine Bitwig bridge test
+# Motion Engine v1 test pass
 
-This prototype exists to answer one question: **is direct parameter control through a Bitwig Controller Extension smooth and predictable enough to be Motion Engine's primary output path?**
+This is the first usable Motion Engine build. The goal of this pass is to test the actual physics workflow, eight-lane Bitwig mapping, and the manual audio-rate fallback.
 
-## 1. Install the release
+## 1. Install
 
-1. Download the newest **prototype** release from this repository.
-2. Extract `MotionEngine-Windows-VST3.zip`.
-3. Copy the complete `Motion Engine.vst3` bundle to:
+Download the newest **Motion Engine v1 alpha** release.
+
+1. Extract `MotionEngine-Windows-VST3.zip`.
+2. Replace the complete `Motion Engine.vst3` bundle in:
    `C:\Program Files\Common Files\VST3\`
-4. Copy `MotionEngineBridge.bwextension` to:
+3. Replace `MotionEngineBridge.bwextension` in:
    `%USERPROFILE%\Documents\Bitwig Studio\Extensions\`
-   Create `Extensions` if it does not exist.
-5. Restart Bitwig Studio.
-6. Open **Settings > Controllers**, choose **Add Controller**, and add:
-   **Motion Engine > Software Bridge**.
-7. Add **Motion Engine** to an audio track. The prototype passes audio through unchanged.
-8. Open its UI. Within about one second it should say **Bridge online**.
+4. Restart Bitwig Studio.
+5. In **Settings > Controllers**, make sure **Motion Engine > Software Bridge** is present. Remove/re-add it if Bitwig retained an older extension instance.
+6. Add **Motion Engine** to an audio track.
 
-If the bridge does not appear, press `Ctrl+Enter`, search for **Control Script Console**, open it, and confirm you see:
-`Motion Engine Bridge listening on UDP 127.0.0.1:19782`
+The footer should report **Bitwig bridge** rather than **Bitwig bridge not seen**.
 
-## 2. Learn the mapping workflow
+## 2. Canvas interaction
 
-Bitwig's `LastClickedParameter` API behaves as a live hover tracker for native controls and does not expose a separate click event. Motion Engine therefore arms mapping and waits for an **actual parameter value change** before locking the target.
+Start with **Spring** and **Free 2D**.
 
-For both native Bitwig controls and third-party plug-in parameters:
+- Drag the bright Body around the canvas. It should follow the pointer directly.
+- Release while moving. The Body should inherit your throw velocity and continue with momentum.
+- Press **HIT** or double-click the canvas. The Body should be kicked and then settle according to the Spring controls.
+- Press **RESET**. The current model should return to a sensible starting state.
+- The trail and velocity line should follow the Body without obvious visual glitches.
 
-1. Press **MAP TARGET**. Motion Engine should say `waiting for parameter movement`.
-2. Move to the parameter you want.
-3. Actually drag/turn/change it slightly.
-4. Motion Engine should lock it and show `mapped` plus the parameter name.
+Then try the physical constraints:
 
-Hovering a native Bitwig parameter without moving it must **not** map it.
+- **Horizontal**: Body remains on Y=0.
+- **Vertical**: Body remains on X=0.
+- **Diagonal**: Body moves on the bottom-left to top-right diagonal.
+- **Circle**: Body remains on a circular path.
 
-A click that does not change the parameter value cannot be distinguished reliably through Bitwig's public controller API. For mapping, make a small drag/turn instead.
+## 3. Motion model sanity pass
 
-Press **UNMAP** before changing to an unrelated target. UNMAP now also calls Bitwig's `restoreAutomationControl()` for the mapped parameter so any pre-existing automation that was temporarily overridden can resume.
+Switch through every model and move its four dedicated controls through a useful range. The labels should change with the model.
 
-## 3. First sanity check
+- **Orbit**: sustained curved/orbital motion around the center; Speed, Central Pull, Ellipticity and Precession should be clearly different controls.
+- **Spring**: HIT/throw produces overshoot and damped settling around the anchor.
+- **Pendulum**: Body remains on the pendulum arc and responds to Length, Gravity, Damping and Drive.
+- **Brownian**: correlated wandering rather than frame-to-frame white jitter.
+- **Drift**: slow flowing movement with obvious inertia/curl.
+- **Bounce**: free travel and visible collisions with the world boundary; Restitution changes rebound behavior.
+- **Magnet**: attraction/repulsion around the center with polarity and orbit-bias effects.
+- **Explosion**: HIT produces a strong outward event followed by drag/return behavior.
+- **Decay**: HIT injects energy that progressively dissipates.
+- **Follower**: incoming audio moves the Body; level primarily affects vertical target while stereo balance contributes horizontal target.
 
-Use **Sine**, frequency **1 Hz**, bridge rate **120 Hz**.
+Report any model that explodes numerically, sticks to a boundary, feels redundant, or has a control that appears to do nothing.
 
-Map it to **Tool > Pan** or another obvious native bipolar-ish control. Watch and listen for smooth motion. In the Motion Engine telemetry line record:
+## 4. Zones
 
-- `sent` rate
-- `bridge rx` rate
-- `applied` rate
-- `worst gap`
+Four Zones are visible as colored circular fields.
 
-Expected behavior: `sent` and `bridge rx` should be close to the requested rate. `applied` is the important measurement and may reveal Bitwig controller scheduling limits.
+- Drag a Zone's center point to move it.
+- Drag near its outer ring to resize it.
+- Select a Zone from **Zone edit** and change Radius/Falloff numerically.
+- The Zone should brighten as the Body moves deeper into it.
+- Assign one Motion Output to `Zone 1` (or another Zone). Its output meter should rise as the Body enters the Zone and fall as it leaves.
 
-## 4. Rate sweep
+Zones are sensors only. Moving into a Zone must not alter the Body's trajectory.
 
-Keep **Sine / 1 Hz** and use the same target. Test each requested rate for at least 10 seconds:
+## 5. Eight Motion Outputs
 
-| Requested | Sent | Bridge RX | Applied | Worst gap | Audible/visible result |
-|---:|---:|---:|---:|---:|---|
-| 30 Hz | | | | | |
-| 60 Hz | | | | | |
-| 120 Hz | | | | | |
-| 250 Hz | | | | | |
-| 500 Hz | | | | | |
-| 1000 Hz | | | | | |
+Each output strip has Source, Minimum, Maximum, Curve, Smoothing, MAP and Clear.
 
-Do not chase 1000 Hz for its own sake. We care about the lowest rate that is perceptually transparent and stable.
+Test at least these source types:
 
-## 5. Frequency sweep
+- X Position
+- Y Position
+- X/Y Velocity
+- Speed
+- Energy
+- Radius
+- Angle
+- Impact
+- Zone 1
+- Audio Envelope
+- Transient
 
-Use whichever bridge rate looked healthy in section 4. On a target that exposes stepping clearly, test Sine at:
+Check:
 
-- 0.1 Hz
-- 1 Hz
-- 5 Hz
-- 10 Hz
-- 20 Hz
-- 30 Hz
+- Minimum/Maximum can reduce or invert the output range by setting Minimum above Maximum.
+- Curve types visibly change the response.
+- Smoothing slows abrupt output changes without freezing the lane.
+- The thin meter at the left of each strip matches the resulting value.
 
-Good targets: filter cutoff with resonance, oscillator/fine pitch, pan. Reverb mix is a bad diagnostic target because the effect can hide stepping.
+## 6. Bitwig mapping
 
-## 6. Discontinuity torture test
+Map several lanes at the same time, ideally to a mix of Bitwig and third-party parameters.
 
-With the same target and rate, test:
+Example:
 
-1. **Ramp** at 2 Hz. Listen specifically at the wrap from 1 back to 0.
-2. **Step** at 2 Hz. Confirm transitions happen promptly and do not produce strange bursts of intermediate values.
-3. **Impulse** at 2 Hz. This generates an approximately 5 ms full-scale pulse. Note whether it is preserved, shortened, missed entirely, or smeared.
-4. **Spring**. Set stiffness around 18 and damping around 2.4, then repeatedly press **KICK SPRING**. Listen for the overshoot and decay.
+- Motion 1 / X Position -> Tool Pan
+- Motion 2 / Y Position -> stereo width
+- Motion 3 / Speed -> distortion drive
+- Motion 4 / Zone 1 -> reverb mix
+- Motion 5 / Impact -> filter movement
 
-The impulse test is intentionally harsher than normal Motion Engine use. Two debug limitations matter when interpreting it:
+For each lane:
 
-- the VST meter redraws at only 20 Hz, so a 5 ms pulse will usually be invisible even when generated correctly;
-- the bridge coalesces continuous values to the latest value before each Bitwig controller tick, so a short `1 -> 0` pulse that occurs entirely between two controller ticks can be lost by design.
+1. Press **MAP**.
+2. Hover the intended target, then actually drag/turn it slightly.
+3. Confirm hovering unrelated parameters does not map them.
+4. Confirm the strip shows the mapped parameter name.
+5. Map another lane and verify the first mapping keeps working.
+6. Press **×** on one lane and verify only that lane is cleared.
 
-With a controller path around 40-45 Hz, a literal 5 ms external parameter pulse is therefore not a realistic supported signal. Event-like impacts should instead become longer shaped motion, such as a spring kick/envelope, or use a separate future event path.
+Bitwig's own modulators should continue to modulate the same target on top of Motion Engine's moving base value.
 
-## 7. Target matrix
+## 7. Automation restoration
 
-Repeat the useful parts of the test on these targets:
+Use a target with obvious existing automation.
 
-1. **Bitwig Tool pan**
-2. **Bitwig stereo width** or another native continuous parameter
-3. **Serum 2 filter cutoff**, preferably with resonance so stepping is obvious
-4. **Serum 2 fine pitch / oscillator pitch**
-5. **Distortion drive**
-6. **Delay time**
+1. Confirm its automation plays normally.
+2. Map one Motion Output to it. Motion Engine should temporarily take over the base value.
+3. Press **×** on that Motion Output.
+4. The pre-existing automation should immediately resume without recreating or re-enabling the lane.
 
-For each target, note whether the target itself appears to smooth incoming host parameter changes. Different plug-ins can behave differently even at the same bridge rate.
+Repeat on one third-party plug-in parameter if convenient.
 
-## 8. Automation and modulation interaction test
+## 8. MIDI and audio interaction
 
-This is architecturally more important than raw speed.
+### MIDI
 
-### Existing Bitwig modulation
+Route notes through/to Motion Engine and play several notes. Note-on events should behave like HIT events. Verify that this does not mute or otherwise corrupt the main audio stream.
 
-1. Map Motion Engine to a native parameter.
-2. Add a normal Bitwig LFO modulator to the **same parameter** with a clearly visible amount.
-3. Start Motion Engine Sine at a slow rate.
-4. Observe whether Motion Engine moves the **base value** while the LFO remains applied around it, fights/resets the modulation, or causes any UI/state oddities.
+### Audio transient force
 
-### Existing automation
+Use a rhythmic input and raise **Audio Kick**. Transients should disturb the Body. At zero Audio Kick they should stop imparting global force.
 
-Direct controller writes to an automated Bitwig parameter intentionally put that parameter into Bitwig's temporary **automation override** state. While Motion Engine is mapped, absolute automation therefore does not combine with the Motion Engine base-value stream in the same clean way that Bitwig modulators do.
+### Follower
 
-1. Unmap.
-2. Draw obvious automation for a parameter over several bars.
-3. Map Motion Engine to that same parameter.
-4. Confirm Motion Engine takes over the base value while mapped.
-5. Press **UNMAP**.
-6. Confirm the original automation resumes automatically. If it does not, note whether Bitwig's global **Restore Automation Control** indicator is still armed.
+Select **Follower**, feed real audio through Motion Engine, and compare silence, sustained audio, and rhythmic audio. It should chase a changing target with inertia rather than directly tracing an envelope.
 
-The automation data itself should remain present; UNMAP should only release Motion Engine's temporary override.
+## 9. Audio-rate fallback
 
-## 9. What to send back
+Motion Engine advertises eight mono auxiliary VST outputs: **Motion 1** through **Motion 8**. Bitwig exposes multichannel plug-in outputs through its Multi-out chains.
 
-For a useful first report, send:
+1. In the Motion Engine device, open the **Multi-out** selector (double-arrow button).
+2. Add/enable the desired `Motion N` output chain.
+3. Add Bitwig's **Audio Rate** modulator to the device/track you want to control.
+4. In Audio Rate's source chooser, select the track containing Motion Engine, then **Chains**, then the desired `Motion N` source.
+5. Leave **Rectify** off for the normal bipolar signal.
+6. Map the Audio Rate modulator to a target parameter.
 
-- Bitwig version
-- audio buffer size and sample rate
-- CPU model only if convenient
-- rate-sweep table from section 4
-- the highest Sine frequency that still sounded completely smooth on Serum cutoff or pitch
-- what happened to the 5 ms Impulse
-- what happened when Bitwig modulation and automation already existed on the mapped target
-- any Control Script Console errors
+The aux signal is `-1..+1` and is smoothly interpolated between physics updates. This route bypasses the Controller Extension parameter-update ceiling and is the manual fallback for sensitive/high-rate targets.
 
-A screen recording is useful if the parameter visibly stair-steps, but the telemetry numbers and listening result matter more.
+Check that the main stereo audio from Motion Engine still passes through normally while one or more aux chains are enabled.
 
-## Pass/fail interpretation
+## 10. State, reload, and multiple instances
 
-**Strong pass:** 120-250 Hz is stable and perceptually transparent on sensitive parameters; spring/impact behavior is convincing; base-value interaction with Bitwig modulation is sane.
+These are important because the original bridge spike only proved a single live instance.
 
-**Usable with caveat:** controller scheduling tops out well below 120 Hz, but ordinary physics motion remains perceptually smooth, Bitwig modulators compose correctly with the moved base value, and sharp/event-like signals can be handled as shaped motion or through a separate path.
+- Save the project with several Motion Engine parameter settings, close/reopen it, and confirm model/Zone/output settings restore.
+- Check whether external Bitwig target mappings survive a project/Bitwig restart. Report exactly what survives; this has not yet been proven by the prototype.
+- Add a **second Motion Engine instance on another track**. Map outputs from both instances to different targets and report whether they remain independent or fight. This is an explicit v1 boundary test.
 
-**Architectural fail:** update scheduling is visibly/audibly coarse at ordinary Motion Engine speeds, or continuous writes make normal project workflows unsafe even after automation control is correctly restored on unmap. In that case we pivot to another host-integration architecture before building the full plugin.
+Do not assume a failure here is user error. If two instances collide, the bridge protocol needs per-instance sessions.
+
+## What to report back
+
+The most useful report is concise:
+
+- UI/canvas problems
+- model(s) that feel wrong or redundant
+- drag/flick/HIT behavior
+- Zone editing/proximity behavior
+- how many simultaneous output mappings you tested
+- whether per-lane Map/Clear and automation restoration worked
+- MIDI and audio-response behavior
+- whether Motion 1-8 appear in Bitwig Multi-out and whether Audio Rate can use them
+- project reload behavior
+- two-instance behavior
+- any Control Script Console errors or plug-in crashes
+
+Screenshots are especially useful for layout/visual problems. A screen recording is useful for physics that feels wrong.
