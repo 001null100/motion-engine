@@ -105,8 +105,6 @@ void MotionCanvas::paint(juce::Graphics& g)
         g.setColour(colour.withAlpha(0.045f + amount * 0.13f));
         g.fillEllipse(ellipse);
 
-        // Show the response curve spatially. These rings mark approximately
-        // 75%, 50%, and 25% zone output for the current falloff exponent.
         constexpr std::array<float, 3> responseLevels { 0.75f, 0.50f, 0.25f };
         for (size_t levelIndex = 0; levelIndex < responseLevels.size(); ++levelIndex)
         {
@@ -150,7 +148,6 @@ void MotionCanvas::paint(juce::Graphics& g)
         g.drawEllipse(juce::Rectangle<float>(centre.x - 7.0f, centre.y - 7.0f, 14.0f, 14.0f), 1.5f);
     }
 
-    // A short luminous tail is much easier to read than a long uniform history.
     if (trail.size() > 1)
     {
         for (size_t i = 1; i < trail.size(); ++i)
@@ -254,7 +251,9 @@ void MotionCanvas::mouseDown(const juce::MouseEvent& event)
     lastDragTimeMs = juce::Time::getMillisecondCounterHiRes();
     flickVelocity = {};
 
-    if (distance(mouse, body) <= 20.0f)
+    // The visible body is small, but grabbing a moving modulation source should
+    // not be an aim-training exercise. Keep a generous invisible hit target.
+    if (distance(mouse, body) <= 38.0f)
     {
         dragMode = DragMode::body;
         processor.getMotionCore().beginDrag(lastDragWorld.x, lastDragWorld.y);
@@ -343,8 +342,6 @@ OutputStrip::OutputStrip(MotionEngineAudioProcessor& p, const int slot) : proces
     configureCompactSlider(smoothSlider);
     smoothSlider.setTextValueSuffix(" ms");
 
-    // Min/max are ranges, not motions. A compact editable number field is much
-    // easier to use here than squeezing a pretend slider into 80 pixels.
     for (auto* rangeSlider : { &minSlider, &maxSlider })
     {
         rangeSlider->setSliderStyle(juce::Slider::LinearBar);
@@ -545,13 +542,9 @@ MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineA
     zoneBox.setSelectedItemIndex(0, juce::sendNotificationSync);
     updateModelLabels();
 
-    // Size only after all children exist. setSize() calls resized() synchronously.
     setResizable(true, true);
     setResizeLimits(1120, 700, 1800, 1100);
     setSize(1320, 820);
-
-    // The physics runs at 240 Hz; 60 Hz visual updates keep dragging and trails
-    // responsive without wasting UI-thread time.
     startTimerHz(60);
 }
 
