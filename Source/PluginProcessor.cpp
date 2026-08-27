@@ -1,34 +1,104 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+namespace
+{
+juce::AudioProcessor::BusesProperties makeBuses()
+{
+    auto buses = juce::AudioProcessor::BusesProperties()
+        .withInput("Input", juce::AudioChannelSet::stereo(), true)
+        .withOutput("Output", juce::AudioChannelSet::stereo(), true);
+
+    for (int i = 0; i < motion::kNumOutputs; ++i)
+        buses = buses.withOutput("Motion " + juce::String(i + 1), juce::AudioChannelSet::mono(), true);
+    return buses;
+}
+}
+
 MotionEngineAudioProcessor::MotionEngineAudioProcessor()
-    : AudioProcessor(BusesProperties()
-                         .withInput("Input", juce::AudioChannelSet::stereo(), true)
-                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+    : AudioProcessor(makeBuses()),
       parameters(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
-    bridge = std::make_unique<BridgeEngine>(parameters);
+    motionCore = std::make_unique<motion::MotionEngineCore>(parameters);
+    bridge = std::make_unique<BridgeEngine>(*motionCore);
     bridge->start();
 }
 
 MotionEngineAudioProcessor::~MotionEngineAudioProcessor() = default;
 
-void MotionEngineAudioProcessor::prepareToPlay(double, int) {}
+void MotionEngineAudioProcessor::prepareToPlay(const double sampleRate, int)
+{
+    motionCore->prepare(sampleRate);
+}
+
 void MotionEngineAudioProcessor::releaseResources() {}
 
 bool MotionEngineAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
     const auto input = layouts.getMainInputChannelSet();
     const auto output = layouts.getMainOutputChannelSet();
-    return input == output && (input == juce::AudioChannelSet::mono() || input == juce::AudioChannelSet::stereo());
+    if (input != output || (input != juce::AudioChannelSet::mono() && input != juce::AudioChannelSet::stereo()))
+        return false;
+
+    for (int bus = 1; bus < layouts.outputBuses.size(); ++bus)
+    {
+        const auto set = layouts.getChannelSet(false, bus);
+        if (!set.isDisabled() && set != juce::AudioChannelSet::mono())
+            return false;
+    }
+    return true;
 }
 
-void MotionEngineAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+void MotionEngineAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
-    for (int channel = getTotalNumInputChannels(); channel < getTotalNumOutputChannels(); ++channel)
-        buffer.clear(channel, 0, buffer.getNumSamples());
-    // Prototype is deliberately transparent: audio passes through unchanged.
+
+    for (const auto metadata : midi)
+        if (metadata.getMessage().isNoteOn())
+            motionCore->triggerHit();
+
+    auto input = getBusBuffer(buffer, true, 0);
+    const auto previousOutputs = motionCore->getOutputs();
+    motionCore->processBlock(input);
+    const auto currentOutputs = motionCore->getOutputs();
+
+    auto mainOutput = getBusBuffer(buffer, false, 0);
+    for (int channel = 0; channel < mainOutput.getNumChannels(); ++channel)
+    {
+        if (channel < input.getNumChannels())
+        {
+            if (mainOutput.getWritePointer(channel) != input.getReadPointer(channel))
+                mainOutput.copyFrom(channel, 0, input, channel, 0, input.getNumSamples());
+        }
+        else
+        {
+            mainOutput.clear(channel, 0, mainOutput.getNumSamples());
+        }
+    }
+
+    const int samples = buffer.getNumSamples();
+    for (int output = 0; output < motion::kNumOutputs; ++output)
+    {
+        if (output + 1 >= getBusCount(false))
+            break;
+
+        auto aux = getBusBuffer(buffer, false, output + 1);
+        if (aux.getNumChannels() == 0)
+            continue;
+
+        auto* data = aux.getWritePointer(0);
+        const float start = previousOutputs[static_cast<size_t>(output)];
+        const float end = currentOutputs[static_cast<size_t>(output)];
+        for (int sample = 0; sample < samples; ++sample)
+        {
+            const float t = samples > 1 ? static_cast<float>(sample) / static_cast<float>(samples - 1) : 1.0f;
+            const float normalized = start + (end - start) * t;
+            data[sample] = normalized * 2.0f - 1.0f;
+        }
+
+        for (int channel = 1; channel < aux.getNumChannels(); ++channel)
+            aux.copyFrom(channel, 0, aux, 0, 0, samples);
+    }
 }
 
 juce::AudioProcessorEditor* MotionEngineAudioProcessor::createEditor()
@@ -39,16 +109,47 @@ juce::AudioProcessorEditor* MotionEngineAudioProcessor::createEditor()
 juce::AudioProcessorValueTreeState::ParameterLayout MotionEngineAudioProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
-    layout.add(std::make_unique<juce::AudioParameterChoice>("source", "Debug Source",
-        juce::StringArray { "Spring", "Sine", "Ramp", "Step", "Impulse" }, 1));
-    layout.add(std::make_unique<juce::AudioParameterChoice>("bridgeRate", "Bridge Rate",
-        juce::StringArray { "30 Hz", "60 Hz", "120 Hz", "250 Hz", "500 Hz", "1000 Hz" }, 2));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("frequency", "Frequency",
-        juce::NormalisableRange<float>(0.05f, 30.0f, 0.001f, 0.35f), 1.0f));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("stiffness", "Spring Stiffness",
-        juce::NormalisableRange<float>(0.5f, 80.0f, 0.01f, 0.4f), 18.0f));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("damping", "Spring Damping",
-        juce::NormalisableRange<float>(0.0f, 20.0f, 0.01f), 2.4f));
+
+    layout.add(std::make_unique<juce::AudioParameterChoice>("model", "Motion Model", motion::MotionEngineCore::modelNames(), 1));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("constraint", "Constraint", motion::MotionEngineCore::constraintNames(), 0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("timeScale", "Time", juce::NormalisableRange<float>(0.1f, 3.0f, 0.001f, 0.45f), 1.0f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("energy", "Energy", juce::NormalisableRange<float>(0.0f, 2.0f, 0.001f), 1.0f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("globalDamping", "Global Damping", juce::NormalisableRange<float>(0.0f, 2.0f, 0.001f), 0.12f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("audioKick", "Audio Kick", juce::NormalisableRange<float>(0.0f, 2.0f, 0.001f), 0.45f));
+
+    layout.add(std::make_unique<juce::AudioParameterFloat>("motionA", "Motion A", 0.0f, 1.0f, 0.58f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("motionB", "Motion B", 0.0f, 1.0f, 0.34f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("motionC", "Motion C", 0.0f, 1.0f, 0.5f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("motionD", "Motion D", 0.0f, 1.0f, 0.5f));
+
+    constexpr std::array<std::array<float, 4>, motion::kNumZones> zoneDefaults {{
+        {{ -0.58f,  0.52f, 0.55f, 1.35f }},
+        {{  0.58f,  0.52f, 0.55f, 1.35f }},
+        {{ -0.58f, -0.52f, 0.55f, 1.35f }},
+        {{  0.58f, -0.52f, 0.55f, 1.35f }}
+    }};
+
+    for (int zone = 0; zone < motion::kNumZones; ++zone)
+    {
+        const auto prefix = "zone" + juce::String(zone + 1);
+        layout.add(std::make_unique<juce::AudioParameterFloat>(prefix + "X", "Zone " + juce::String(zone + 1) + " X", -1.0f, 1.0f, zoneDefaults[static_cast<size_t>(zone)][0]));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(prefix + "Y", "Zone " + juce::String(zone + 1) + " Y", -1.0f, 1.0f, zoneDefaults[static_cast<size_t>(zone)][1]));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(prefix + "Radius", "Zone " + juce::String(zone + 1) + " Radius", juce::NormalisableRange<float>(0.08f, 1.5f, 0.001f), zoneDefaults[static_cast<size_t>(zone)][2]));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(prefix + "Falloff", "Zone " + juce::String(zone + 1) + " Falloff", juce::NormalisableRange<float>(0.2f, 4.0f, 0.001f), zoneDefaults[static_cast<size_t>(zone)][3]));
+    }
+
+    constexpr std::array<int, motion::kNumOutputs> defaultSources { 0, 1, 4, 8, 9, 10, 11, 12 };
+    for (int output = 0; output < motion::kNumOutputs; ++output)
+    {
+        const auto prefix = "out" + juce::String(output + 1);
+        const auto label = "Motion " + juce::String(output + 1);
+        layout.add(std::make_unique<juce::AudioParameterChoice>(prefix + "Source", label + " Source", motion::MotionEngineCore::sourceNames(), defaultSources[static_cast<size_t>(output)]));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(prefix + "Min", label + " Minimum", 0.0f, 1.0f, 0.0f));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(prefix + "Max", label + " Maximum", 0.0f, 1.0f, 1.0f));
+        layout.add(std::make_unique<juce::AudioParameterChoice>(prefix + "Curve", label + " Curve", motion::MotionEngineCore::curveNames(), 1));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(prefix + "Smooth", label + " Smoothing", juce::NormalisableRange<float>(0.0f, 500.0f, 0.1f, 0.4f), 12.0f));
+    }
+
     return layout;
 }
 
