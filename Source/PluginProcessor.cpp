@@ -115,7 +115,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MotionEngineAudioProcessor::
     layout.add(std::make_unique<juce::AudioParameterChoice>("constraint", "Constraint", motion::MotionEngineCore::constraintNames(), 0));
     layout.add(std::make_unique<juce::AudioParameterFloat>("timeScale", "Time", juce::NormalisableRange<float>(0.1f, 3.0f, 0.001f, 0.45f), 1.0f));
     layout.add(std::make_unique<juce::AudioParameterFloat>("energy", "Energy", juce::NormalisableRange<float>(0.0f, 2.0f, 0.001f), 1.0f));
-    layout.add(std::make_unique<juce::AudioParameterFloat>("globalDamping", "Global Damping", juce::NormalisableRange<float>(0.0f, 2.0f, 0.001f), 0.12f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>("globalDamping", "World Drag", juce::NormalisableRange<float>(0.0f, 2.0f, 0.001f), 0.12f));
     layout.add(std::make_unique<juce::AudioParameterFloat>("audioKick", "Audio Kick", juce::NormalisableRange<float>(0.0f, 2.0f, 0.001f), 0.45f));
 
     layout.add(std::make_unique<juce::AudioParameterFloat>("motionA", "Motion A", 0.0f, 1.0f, 0.58f));
@@ -124,10 +124,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout MotionEngineAudioProcessor::
     layout.add(std::make_unique<juce::AudioParameterFloat>("motionD", "Motion D", 0.0f, 1.0f, 0.5f));
 
     constexpr std::array<std::array<float, 4>, motion::kNumZones> zoneDefaults {{
-        {{ -0.58f,  0.52f, 0.55f, 1.35f }},
-        {{  0.58f,  0.52f, 0.55f, 1.35f }},
-        {{ -0.58f, -0.52f, 0.55f, 1.35f }},
-        {{  0.58f, -0.52f, 0.55f, 1.35f }}
+        {{ -0.52f,  0.52f, 0.38f, 1.35f }},
+        {{  0.52f,  0.52f, 0.38f, 1.35f }},
+        {{ -0.52f, -0.52f, 0.38f, 1.35f }},
+        {{  0.52f, -0.52f, 0.38f, 1.35f }}
     }};
 
     for (int zone = 0; zone < motion::kNumZones; ++zone)
