@@ -21,8 +21,8 @@ MotionEngineAudioProcessorEditor::MotionEngineAudioProcessorEditor(MotionEngineA
 
     for (auto* c : { &sourceBox, &rateBox })
         addAndMakeVisible(c);
-    sourceBox.addItemList({ "Spring", "Sine", "Ramp", "Step", "Impulse" }, 1);
-    rateBox.addItemList({ "30 Hz", "60 Hz", "120 Hz", "250 Hz", "500 Hz", "1000 Hz" }, 1);
+    sourceBox.addItemList(juce::StringArray { "Spring", "Sine", "Ramp", "Step", "Impulse" }, 1);
+    rateBox.addItemList(juce::StringArray { "30 Hz", "60 Hz", "120 Hz", "250 Hz", "500 Hz", "1000 Hz" }, 1);
 
     configureSlider(frequencySlider, " Hz");
     configureSlider(stiffnessSlider);
@@ -111,8 +111,8 @@ void MotionEngineAudioProcessorEditor::resized()
 void MotionEngineAudioProcessorEditor::timerCallback()
 {
     const auto s = processor.getBridge().getStatus();
-    const auto bridgeText = s.bridgeSeen ? "Bridge online" : "Bridge not seen";
-    const auto mappingText = s.mapped ? "mapped" : (s.armed ? "waiting for target" : "unmapped");
+    const juce::String bridgeText = s.bridgeSeen ? "Bridge online" : "Bridge not seen";
+    const juce::String mappingText = s.mapped ? "mapped" : (s.armed ? "waiting for target" : "unmapped");
 
     targetLabel.setText(bridgeText + "  |  " + mappingText + "  |  Target: " + s.targetName,
                         juce::dontSendNotification);
