@@ -7,6 +7,7 @@ namespace
 {
 constexpr double kSimulationHz = 240.0;
 constexpr double kTwoPi = juce::MathConstants<double>::twoPi;
+constexpr double kPi = juce::MathConstants<double>::pi;
 constexpr double kSqrtTwo = 1.4142135623730951;
 
 double clampUnit(const double value)
@@ -112,7 +113,7 @@ std::array<juce::String, 4> MotionEngineCore::controlNamesForModel(const int mod
 {
     switch (model)
     {
-        case 0: return { "Orbit Speed", "Orbit Pull", "Ellipticity", "Precession" };
+        case 0: return { "Radius", "Ellipticity", "Rotation", "Orbit Speed" };
         case 1: return { "Tension", "Damping", "Swirl", "Anchor Offset" };
         case 2: return { "Length", "Gravity", "Damping", "Drive" };
         case 3: return { "Activity", "Inertia", "Correlation", "Bias" };
@@ -214,7 +215,17 @@ void MotionEngineCore::resetForModel(const int model)
 
     switch (lastModel)
     {
-        case 0: x = 0.62; y = 0.0; vx = 0.0; vy = 0.9; break;
+        case 0:
+        {
+            const double radius = 0.22 + clampUnit(param("motionA")) * 0.68;
+            const double rotation = clampUnit(param("motionC")) * kPi;
+            const double speed = 0.18 + clampUnit(param("motionD")) * 1.7;
+            x = std::cos(rotation) * radius;
+            y = std::sin(rotation) * radius;
+            vx = -std::sin(rotation) * speed;
+            vy = std::cos(rotation) * speed;
+            break;
+        }
         case 1: x = 0.72; y = -0.18; break;
         case 2: pendulumAngle = 0.72; x = 0.5; y = -0.55; break;
         case 3: x = 0.0; y = 0.0; break;
@@ -268,14 +279,13 @@ void MotionEngineCore::step(const double dt)
         {
             case 0:
             {
-                const double radius = juce::jmax(0.08, std::hypot(x, y));
-                const double nx = x / radius;
-                const double ny = y / radius;
-                const double tx = -ny;
-                const double ty = nx;
-                const double force = 0.22 + 0.65 * energy;
-                vx += nx * force + tx * force * 0.18;
-                vy += ny * force + ty * force * 0.18;
+                // Strong enough to visibly kick the orbit off course, but tamer
+                // than the original generic HIT. Direction is deterministic so
+                // repeated hits at the same orbital position feel consistent.
+                const double force = 0.7 + 1.7 * energy;
+                const double hitDirection = std::atan2(y, x) + 0.48;
+                vx += std::cos(hitDirection) * force;
+                vy += std::sin(hitDirection) * force;
                 break;
             }
             case 2: pendulumVelocity += (1.4 + 5.0 * a) * energy; break;
@@ -310,29 +320,27 @@ void MotionEngineCore::step(const double dt)
     {
         case 0: // Orbit
         {
-            // Orbit is a smooth path-following physical system rather than a
-            // generic central-force hack. Ellipticity defines the orbit shape
-            // explicitly, while velocity and disturbances are still real state.
-            constexpr double targetRadius = 0.62;
-            const double aspect = 1.0 - c * 0.55; // 1.0 = circle, 0.45 = strong ellipse
-            const double precessionRate = d * 0.14; // 0 = fixed axis
-            const double orientation = elapsed * precessionRate;
+            // User-facing Orbit is intentionally simple:
+            // A = radius, B = ellipticity, C = fixed rotation, D = speed.
+            // Path recovery is an internal property rather than another knob.
+            const double targetRadius = 0.22 + a * 0.68;
+            const double aspect = 1.0 - b * 0.65; // 1.0 circle -> 0.35 strong ellipse
+            const double orientation = c * kPi;  // 0..180 degrees covers ellipse orientation
             const double co = std::cos(orientation);
             const double so = std::sin(orientation);
 
-            // Transform into the slowly rotating ellipse frame.
+            // Rotate into the ellipse frame.
             const double lx = co * x + so * y;
             const double ly = -so * x + co * y;
             const double lvx = co * vx + so * vy;
             const double lvy = -so * vx + co * vy;
 
-            // Ellipse-space radius. Scaling Y by aspect makes the target ellipse
-            // become a circle in this metric, so radial correction stays smooth.
+            // In ellipse-space the desired path is a circle of targetRadius.
             const double qx = lx;
             const double qy = ly / aspect;
             const double ellipseRadius = juce::jmax(1.0e-5, std::hypot(qx, qy));
 
-            // Gradient of the ellipse metric gives the local outward normal.
+            // Gradient of the ellipse metric gives a smooth local normal.
             double rx = qx / ellipseRadius;
             double ry = qy / (ellipseRadius * aspect);
             const double normalLength = juce::jmax(1.0e-5, std::hypot(rx, ry));
@@ -345,25 +353,22 @@ void MotionEngineCore::step(const double dt)
             const double tangentialVelocity = lvx * tx + lvy * ty;
             const double radialError = ellipseRadius - targetRadius;
 
-            const double pull = 1.4 + b * 13.0;
-            const double radialDamping = 1.2 + b * 4.2;
-            const double targetSpeed = 0.22 + a * 1.65;
-            const double tangentDrive = 1.25 + b * 1.8;
+            constexpr double pull = 8.0;
+            constexpr double radialDamping = 3.0;
+            constexpr double tangentDrive = 2.0;
+            const double targetSpeed = 0.18 + d * 1.7;
 
             const double radialAcceleration = -pull * radialError - radialDamping * radialVelocity;
             const double tangentAcceleration = (targetSpeed - tangentialVelocity) * tangentDrive;
             const double lax = rx * radialAcceleration + tx * tangentAcceleration;
             const double lay = ry * radialAcceleration + ty * tangentAcceleration;
 
-            // Rotate acceleration back to world coordinates and integrate normally,
-            // preserving mouse throws, HIT impulses, and other disturbances.
             vx += (co * lax - so * lay) * dt;
             vy += (so * lax + co * lay) * dt;
             x += vx * dt;
             y += vy * dt;
 
-            // The nominal orbit lives well inside the world. This only catches
-            // deliberate hard throws instead of shaping the orbit itself.
+            // Normal motion should never need the walls. This only catches a hard throw.
             containBody(true, 0.52, 0.0);
             break;
         }
