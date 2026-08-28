@@ -34,9 +34,15 @@ MotionCanvas::MotionCanvas(MotionEngineAudioProcessor& p) : processor(p)
 
 juce::Rectangle<float> MotionCanvas::worldBounds() const
 {
-    auto bounds = getLocalBounds().toFloat().reduced(14.0f, 14.0f);
-    bounds.removeFromBottom(24.0f);
-    return bounds;
+    auto available = getLocalBounds().toFloat().reduced(14.0f, 14.0f);
+    available.removeFromBottom(24.0f);
+
+    // Physics coordinates are isotropic. Mapping X across a wide rectangle and Y
+    // across a shorter one made mathematically circular motion look elliptical.
+    const float side = juce::jmax(1.0f, juce::jmin(available.getWidth(), available.getHeight()));
+    return { available.getCentreX() - side * 0.5f,
+             available.getCentreY() - side * 0.5f,
+             side, side };
 }
 
 juce::Point<float> MotionCanvas::worldToScreen(const float worldX, const float worldY) const
@@ -55,8 +61,7 @@ juce::Point<float> MotionCanvas::screenToWorld(const juce::Point<float> point) c
 
 float MotionCanvas::worldRadiusToPixels(const float radius) const
 {
-    const auto area = worldBounds();
-    return radius * 0.25f * (area.getWidth() + area.getHeight());
+    return radius * worldBounds().getWidth() * 0.5f;
 }
 
 void MotionCanvas::paint(juce::Graphics& g)
@@ -88,6 +93,36 @@ void MotionCanvas::paint(juce::Graphics& g)
     g.drawLine(world.getX(), centre.y, world.getRight(), centre.y, 1.4f);
 
     const auto snapshot = processor.getMotionCore().getSnapshot();
+    const int model = static_cast<int>(processor.parameters.getRawParameterValue("model")->load());
+
+    if (model == 0)
+    {
+        // Draw the exact nominal path used by Orbit. This makes Radius,
+        // Ellipticity and Rotation readable before the Body completes a lap.
+        const float radius = 0.22f + processor.parameters.getRawParameterValue("motionA")->load() * 0.68f;
+        const float aspect = 1.0f - processor.parameters.getRawParameterValue("motionB")->load() * 0.65f;
+        const float rotation = processor.parameters.getRawParameterValue("motionC")->load() * juce::MathConstants<float>::pi;
+        const float co = std::cos(rotation);
+        const float so = std::sin(rotation);
+
+        juce::Path orbitGuide;
+        constexpr int samples = 96;
+        for (int i = 0; i <= samples; ++i)
+        {
+            const float phase = juce::MathConstants<float>::twoPi * static_cast<float>(i) / static_cast<float>(samples);
+            const float localX = radius * std::cos(phase);
+            const float localY = radius * aspect * std::sin(phase);
+            const float worldX = co * localX - so * localY;
+            const float worldY = so * localX + co * localY;
+            const auto point = worldToScreen(worldX, worldY);
+            if (i == 0)
+                orbitGuide.startNewSubPath(point);
+            else
+                orbitGuide.lineTo(point);
+        }
+        g.setColour(accent.withAlpha(0.18f));
+        g.strokePath(orbitGuide, juce::PathStrokeType(1.15f));
+    }
 
     for (int zone = 0; zone < motion::kNumZones; ++zone)
     {
@@ -124,7 +159,6 @@ void MotionCanvas::paint(juce::Graphics& g)
         g.drawText("Z" + juce::String(zone + 1), static_cast<int>(center.x + 8.0f), static_cast<int>(center.y - 18.0f), 30, 18, juce::Justification::centredLeft);
     }
 
-    const int model = static_cast<int>(processor.parameters.getRawParameterValue("model")->load());
     if (model == 1)
     {
         const float anchorX = (processor.parameters.getRawParameterValue("motionD")->load() - 0.5f) * 0.9f;
@@ -251,8 +285,6 @@ void MotionCanvas::mouseDown(const juce::MouseEvent& event)
     lastDragTimeMs = juce::Time::getMillisecondCounterHiRes();
     flickVelocity = {};
 
-    // The visible body is small, but grabbing a moving modulation source should
-    // not be an aim-training exercise. Keep a generous invisible hit target.
     if (distance(mouse, body) <= 38.0f)
     {
         dragMode = DragMode::body;
