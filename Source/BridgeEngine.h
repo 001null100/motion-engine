@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -46,6 +47,7 @@ private:
     void sendGoodbye() noexcept;
     void sendPacket(const std::string& message) noexcept;
     void receiveTelemetry() noexcept;
+    void markBridgeOfflineIfStale(std::chrono::steady_clock::time_point now) noexcept;
 
     motion::MotionEngineCore& core_;
     const std::string sessionId_;
@@ -59,5 +61,6 @@ private:
 
     mutable std::mutex statusMutex_;
     Status status_;
+    std::chrono::steady_clock::time_point lastTelemetry_ {};
     std::uint64_t sequence_ = 0;
 };

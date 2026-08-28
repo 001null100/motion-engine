@@ -6,7 +6,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <sstream>
 #include <string_view>
 #include <vector>
 
@@ -28,6 +27,7 @@ namespace
 {
 constexpr int bridgePort = 19782;
 constexpr int sendRateHz = 120;
+constexpr auto bridgeTimeout = std::chrono::milliseconds(2500);
 
 #if defined(_WIN32)
 using NativeSocket = SOCKET;
@@ -189,6 +189,7 @@ void BridgeEngine::run() noexcept
         receiveTelemetry();
 
         const auto now = clock::now();
+        markBridgeOfflineIfStale(now);
         const double windowSeconds = std::chrono::duration<double>(now - sentWindowStart).count();
         if (windowSeconds >= 1.0)
         {
@@ -288,6 +289,7 @@ void BridgeEngine::receiveTelemetry() noexcept
         const auto names = split(fields[8], '~');
 
         const std::scoped_lock lock(statusMutex_);
+        lastTelemetry_ = std::chrono::steady_clock::now();
         status_.bridgeSeen = true;
         status_.receivedHz = std::strtod(fields[3].c_str(), nullptr);
         status_.appliedHz = std::strtod(fields[4].c_str(), nullptr);
@@ -300,5 +302,24 @@ void BridgeEngine::receiveTelemetry() noexcept
             status.targetName = static_cast<std::size_t>(slot) < names.size() && !names[static_cast<std::size_t>(slot)].empty()
                 ? names[static_cast<std::size_t>(slot)] : "None";
         }
+    }
+}
+
+void BridgeEngine::markBridgeOfflineIfStale(std::chrono::steady_clock::time_point now) noexcept
+{
+    const std::scoped_lock lock(statusMutex_);
+    if (!status_.bridgeSeen || lastTelemetry_ == std::chrono::steady_clock::time_point {}
+        || now - lastTelemetry_ <= bridgeTimeout)
+        return;
+
+    status_.bridgeSeen = false;
+    status_.receivedHz = 0.0;
+    status_.appliedHz = 0.0;
+    status_.worstGapMs = 0.0;
+    for (auto& slot : status_.slots)
+    {
+        slot.mapped = false;
+        slot.armed = false;
+        slot.targetName = "None";
     }
 }
