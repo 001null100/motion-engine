@@ -1,6 +1,7 @@
 #include "BridgeEngine.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -52,6 +53,25 @@ void closeSocket(NativeSocket socket) noexcept
 #endif
 }
 
+std::string makeSessionId(const void* identity) noexcept
+{
+    static std::atomic<std::uint64_t> counter { 1 };
+    const auto ticks = static_cast<std::uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(identity));
+    std::uint64_t value = ticks ^ (address * 0x9e3779b97f4a7c15ull)
+                        ^ (counter.fetch_add(1, std::memory_order_relaxed) * 0xbf58476d1ce4e5b9ull);
+    value ^= value >> 30;
+    value *= 0xbf58476d1ce4e5b9ull;
+    value ^= value >> 27;
+    value *= 0x94d049bb133111ebull;
+    value ^= value >> 31;
+
+    char buffer[17] {};
+    std::snprintf(buffer, sizeof(buffer), "%016llx", static_cast<unsigned long long>(value));
+    return buffer;
+}
+
 std::vector<std::string> split(const std::string& text, char delimiter)
 {
     std::vector<std::string> fields;
@@ -69,8 +89,9 @@ std::vector<std::string> split(const std::string& text, char delimiter)
 } // namespace
 
 BridgeEngine::BridgeEngine(motion::MotionEngineCore& core) noexcept
-    : core_(core)
+    : core_(core), sessionId_(makeSessionId(this))
 {
+    status_.sessionId = sessionId_;
 #if defined(_WIN32)
     WSADATA data {};
     socketRuntimeReady_ = WSAStartup(MAKEWORD(2, 2), &data) == 0;
@@ -108,6 +129,7 @@ BridgeEngine::BridgeEngine(motion::MotionEngineCore& core) noexcept
 
 BridgeEngine::~BridgeEngine()
 {
+    sendGoodbye();
     running_.store(false, std::memory_order_release);
     if (thread_.joinable())
         thread_.join();
@@ -185,16 +207,16 @@ void BridgeEngine::run() noexcept
 
 void BridgeEngine::sendCommand(const char* command, int slot) noexcept
 {
-    char buffer[64] {};
-    std::snprintf(buffer, sizeof(buffer), "ME2|%s|%d\n", command, slot);
+    char buffer[96] {};
+    std::snprintf(buffer, sizeof(buffer), "ME3|%s|%s|%d\n", command, sessionId_.c_str(), slot);
     sendPacket(buffer);
 }
 
 void BridgeEngine::sendValues(std::uint64_t sequence, const std::array<float, motion::kNumOutputs>& values) noexcept
 {
-    char buffer[512] {};
-    int written = std::snprintf(buffer, sizeof(buffer), "ME2|VALUES|%llu",
-                                static_cast<unsigned long long>(sequence));
+    char buffer[560] {};
+    int written = std::snprintf(buffer, sizeof(buffer), "ME3|VALUES|%s|%llu",
+                                sessionId_.c_str(), static_cast<unsigned long long>(sequence));
     for (const float raw : values)
     {
         if (written <= 0 || written >= static_cast<int>(sizeof(buffer)))
@@ -208,6 +230,15 @@ void BridgeEngine::sendValues(std::uint64_t sequence, const std::array<float, mo
         buffer[written] = '\0';
         sendPacket(buffer);
     }
+}
+
+void BridgeEngine::sendGoodbye() noexcept
+{
+    if (nativeSocket(socket_) == invalidSocket)
+        return;
+    char buffer[64] {};
+    std::snprintf(buffer, sizeof(buffer), "ME3|BYE|%s\n", sessionId_.c_str());
+    sendPacket(buffer);
 }
 
 void BridgeEngine::sendPacket(const std::string& message) noexcept
@@ -249,18 +280,18 @@ void BridgeEngine::receiveTelemetry() noexcept
         while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
             line.pop_back();
         const auto fields = split(line, '|');
-        if (fields.size() < 8 || fields[0] != "ME2" || fields[1] != "STATUS")
+        if (fields.size() < 9 || fields[0] != "ME3" || fields[1] != "STATUS" || fields[2] != sessionId_)
             continue;
 
-        const int mappedMask = static_cast<int>(std::strtol(fields[5].c_str(), nullptr, 10));
-        const int armedMask = static_cast<int>(std::strtol(fields[6].c_str(), nullptr, 10));
-        const auto names = split(fields[7], '~');
+        const int mappedMask = static_cast<int>(std::strtol(fields[6].c_str(), nullptr, 10));
+        const int armedMask = static_cast<int>(std::strtol(fields[7].c_str(), nullptr, 10));
+        const auto names = split(fields[8], '~');
 
         const std::scoped_lock lock(statusMutex_);
         status_.bridgeSeen = true;
-        status_.receivedHz = std::strtod(fields[2].c_str(), nullptr);
-        status_.appliedHz = std::strtod(fields[3].c_str(), nullptr);
-        status_.worstGapMs = std::strtod(fields[4].c_str(), nullptr);
+        status_.receivedHz = std::strtod(fields[3].c_str(), nullptr);
+        status_.appliedHz = std::strtod(fields[4].c_str(), nullptr);
+        status_.worstGapMs = std::strtod(fields[5].c_str(), nullptr);
         for (int slot = 0; slot < motion::kNumOutputs; ++slot)
         {
             auto& status = status_.slots[static_cast<std::size_t>(slot)];

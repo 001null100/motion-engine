@@ -26,6 +26,7 @@ public:
         double appliedHz = 0.0;
         double worstGapMs = 0.0;
         double sentHz = 0.0;
+        std::string sessionId;
         std::array<SlotStatus, motion::kNumOutputs> slots {};
     };
 
@@ -36,15 +37,18 @@ public:
     void requestMap(int slot) noexcept;
     void requestUnmap(int slot) noexcept;
     Status getStatus() const;
+    const std::string& sessionId() const noexcept { return sessionId_; }
 
 private:
     void run() noexcept;
     void sendCommand(const char* command, int slot) noexcept;
     void sendValues(std::uint64_t sequence, const std::array<float, motion::kNumOutputs>& values) noexcept;
+    void sendGoodbye() noexcept;
     void sendPacket(const std::string& message) noexcept;
     void receiveTelemetry() noexcept;
 
     motion::MotionEngineCore& core_;
+    const std::string sessionId_;
     std::atomic<bool> running_ { false };
     std::thread thread_;
     std::intptr_t socket_ = -1;
