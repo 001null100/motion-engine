@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
+include(CTest)
 
 # Pin the exact null-clap revision validated for raw MIDI ports, process context,
 # sample-accurate event segmentation and bounds-safe event handling.
@@ -62,4 +63,17 @@ target_compile_definitions(MotionEngine PRIVATE
 
 if(MSVC)
     target_compile_options(MotionEngine PRIVATE /utf-8)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(MotionEngineCoreTests
+        tests/MotionEngineCoreTests.cpp
+        Source/MotionEngineCore.cpp
+        Source/MotionEngineCore.h
+    )
+    target_include_directories(MotionEngineCoreTests PRIVATE Source)
+    if(MSVC)
+        target_compile_options(MotionEngineCoreTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME motion-engine-core COMMAND MotionEngineCoreTests)
 endif()

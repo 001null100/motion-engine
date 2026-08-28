@@ -42,6 +42,10 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release --parallel
 
+      - name: Test physics core
+        shell: pwsh
+        run: ctest --test-dir build -C Release --output-on-failure
+
       - name: Validate CLAP
         shell: pwsh
         run: |
@@ -88,4 +92,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "v2-alpha-${{ github.run_number }}"
-          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v2 alpha ${{ github.run_number }}" --notes "Native null-clap Windows build from ${{ github.sha }}. The CLAP module passes clap-validator before publication. Includes the Bitwig bridge and the eight audio-rate modulation outputs."
+          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v2 alpha ${{ github.run_number }}" --notes "Native null-clap Windows build from ${{ github.sha }}. The CLAP module passes core smoke tests and clap-validator before publication. Includes the session-isolated Bitwig bridge and eight audio-rate modulation outputs."
