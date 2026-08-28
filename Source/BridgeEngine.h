@@ -1,19 +1,22 @@
 #pragma once
 
-#include <JuceHeader.h>
-#include <array>
-#include <atomic>
-#include <mutex>
 #include "MotionEngineCore.h"
 
-class BridgeEngine final : private juce::Thread
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <thread>
+
+class BridgeEngine final
 {
 public:
     struct SlotStatus
     {
         bool mapped = false;
         bool armed = false;
-        juce::String targetName { "None" };
+        std::string targetName { "None" };
     };
 
     struct Status
@@ -26,29 +29,31 @@ public:
         std::array<SlotStatus, motion::kNumOutputs> slots {};
     };
 
-    explicit BridgeEngine(motion::MotionEngineCore& core);
-    ~BridgeEngine() override;
+    explicit BridgeEngine(motion::MotionEngineCore& core) noexcept;
+    ~BridgeEngine();
 
     void start();
-    void requestMap(int slot);
-    void requestUnmap(int slot);
+    void requestMap(int slot) noexcept;
+    void requestUnmap(int slot) noexcept;
     Status getStatus() const;
 
 private:
-    void run() override;
-    void sendCommand(const juce::String& command, int slot);
-    void sendValues(uint64_t sequence, const std::array<float, motion::kNumOutputs>& values);
-    void receiveTelemetry();
+    void run() noexcept;
+    void sendCommand(const char* command, int slot) noexcept;
+    void sendValues(std::uint64_t sequence, const std::array<float, motion::kNumOutputs>& values) noexcept;
+    void sendPacket(const std::string& message) noexcept;
+    void receiveTelemetry() noexcept;
 
-    motion::MotionEngineCore& core;
-    juce::DatagramSocket socket { false };
+    motion::MotionEngineCore& core_;
+    std::atomic<bool> running_ { false };
+    std::thread thread_;
+    std::intptr_t socket_ = -1;
+    bool socketRuntimeReady_ = false;
 
-    std::array<std::atomic<bool>, motion::kNumOutputs> pendingMap {};
-    std::array<std::atomic<bool>, motion::kNumOutputs> pendingUnmap {};
+    std::array<std::atomic<bool>, motion::kNumOutputs> pendingMap_ {};
+    std::array<std::atomic<bool>, motion::kNumOutputs> pendingUnmap_ {};
 
-    mutable std::mutex statusMutex;
-    Status status;
-    uint64_t sequence = 0;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BridgeEngine)
+    mutable std::mutex statusMutex_;
+    Status status_;
+    std::uint64_t sequence_ = 0;
 };
