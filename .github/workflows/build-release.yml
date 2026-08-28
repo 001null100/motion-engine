@@ -14,13 +14,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JUCE_VERSION: 9.0.0
-  PLUGINVAL_VERSION: 1.0.4
+  CLAP_VALIDATOR_VERSION: 0.4.1
+  CLAP_VALIDATOR_BUILD: 0.4.1-127-g152b982
 
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -34,46 +34,26 @@ jobs:
           cache: maven
           cache-dependency-path: bridge/pom.xml
 
-      - name: Cache JUCE source
-        id: juce-cache
-        uses: actions/cache@v5
-        with:
-          path: .cache/JUCE
-          key: juce-${{ runner.os }}-${{ env.JUCE_VERSION }}
-
-      - name: Fetch JUCE
-        if: steps.juce-cache.outputs.cache-hit != 'true'
+      - name: Configure native CLAP
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force .cache | Out-Null
-          git clone --depth 1 --branch $env:JUCE_VERSION https://github.com/juce-framework/JUCE.git .cache/JUCE
+        run: cmake -S . -B build -G "Visual Studio 18 2026" -A x64
 
-      - name: Configure VST3
-        shell: pwsh
-        run: cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -DMOTION_JUCE_PATH="${{ github.workspace }}/.cache/JUCE"
-
-      - name: Build VST3
+      - name: Build Motion Engine
         shell: pwsh
         run: cmake --build build --config Release --parallel
 
-      - name: Validate VST3 with pluginval
+      - name: Validate CLAP
         shell: pwsh
         run: |
-          $vst = Get-ChildItem -Path build -Recurse -Directory -Filter "Motion Engine.vst3" | Select-Object -First 1
-          if (-not $vst) { throw "Motion Engine.vst3 was not produced" }
-          Invoke-WebRequest "https://github.com/Tracktion/pluginval/releases/download/v$env:PLUGINVAL_VERSION/pluginval_Windows.zip" -OutFile pluginval.zip
-          Expand-Archive pluginval.zip -DestinationPath .pluginval -Force
-          $resultDir = Join-Path $PWD "pluginval-results"
-          New-Item -ItemType Directory -Force $resultDir | Out-Null
-          $pluginval = Join-Path $PWD ".pluginval/pluginval.exe"
-          $arguments = @(
-            "--validate-in-process",
-            "--strictness-level", "3",
-            "--output-dir", ('"' + $resultDir + '"'),
-            ('"' + $vst.FullName + '"')
-          )
-          $process = Start-Process -FilePath $pluginval -ArgumentList $arguments -PassThru -Wait -NoNewWindow
-          if ($process.ExitCode -ne 0) { throw "pluginval failed with exit code $($process.ExitCode)" }
+          $clap = Get-ChildItem -Path build -Recurse -File -Filter "MotionEngine.clap" | Select-Object -First 1
+          if (-not $clap) { throw "MotionEngine.clap was not produced" }
+          $validatorZip = "clap-validator-$env:CLAP_VALIDATOR_BUILD-windows.zip"
+          Invoke-WebRequest "https://github.com/free-audio/clap-validator/releases/download/$env:CLAP_VALIDATOR_VERSION/$validatorZip" -OutFile clap-validator.zip
+          Expand-Archive clap-validator.zip -DestinationPath .clap-validator -Force
+          $validator = Get-ChildItem -Path .clap-validator -Recurse -File -Filter "clap-validator.exe" | Select-Object -First 1
+          if (-not $validator) { throw "clap-validator.exe was not found" }
+          & $validator.FullName validate $clap.FullName --only-failed
+          if ($LASTEXITCODE -ne 0) { throw "clap-validator failed with exit code $LASTEXITCODE" }
 
       - name: Build Bitwig bridge
         shell: pwsh
@@ -86,34 +66,26 @@ jobs:
         run: |
           $dist = Join-Path $PWD "dist"
           New-Item -ItemType Directory -Force $dist | Out-Null
-          $vst = Get-ChildItem -Path build -Recurse -Directory -Filter "Motion Engine.vst3" | Select-Object -First 1
-          if (-not $vst) { throw "Motion Engine.vst3 was not produced" }
-          Compress-Archive -Path $vst.FullName -DestinationPath "$dist/MotionEngine-Windows-VST3.zip" -Force
+          $clap = Get-ChildItem -Path build -Recurse -File -Filter "MotionEngine.clap" | Select-Object -First 1
+          if (-not $clap) { throw "MotionEngine.clap was not produced" }
+          Copy-Item $clap.FullName "$dist/MotionEngine.clap" -Force
+          Compress-Archive -Path "$dist/MotionEngine.clap" -DestinationPath "$dist/MotionEngine-Windows-CLAP.zip" -Force
           Copy-Item bridge/target/MotionEngineBridge.bwextension "$dist/MotionEngineBridge.bwextension"
           Copy-Item docs/TESTING.md "$dist/TESTING.md"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
         with:
-          name: MotionEngine-Windows
+          name: MotionEngine-Windows-CLAP
           path: dist/*
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload pluginval logs
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: MotionEngine-pluginval
-          path: pluginval-results/*
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Publish v1 alpha release
+      - name: Publish v2 alpha release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v1-alpha-${{ github.run_number }}"
-          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v1 alpha ${{ github.run_number }}" --notes "Automated Windows VST3 + Bitwig bridge build from ${{ github.sha }}. VST3 passes pluginval strictness level 3 before publication. See TESTING.md in the release assets for the v1 test pass."
+          $tag = "v2-alpha-${{ github.run_number }}"
+          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v2 alpha ${{ github.run_number }}" --notes "Native null-clap Windows build from ${{ github.sha }}. The CLAP module passes clap-validator before publication. Includes the Bitwig bridge and the eight audio-rate modulation outputs."
