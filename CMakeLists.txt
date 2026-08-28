@@ -9,11 +9,11 @@ include(FetchContent)
 include(CTest)
 
 # Pin the exact null-clap revision validated for raw MIDI ports, process context,
-# sample-accurate event segmentation and bounds-safe event handling.
+# bounds-safe event handling, and correct writable-parameter CLAP state restore.
 FetchContent_Declare(
     null_clap
     GIT_REPOSITORY https://github.com/001null100/null-clap.git
-    GIT_TAG ddc3989229bdc4eb66fff6937fcaeaf9080532fb
+    GIT_TAG 253cc44d0d5625519208a89177d9f7f4d73ccffd
     GIT_SHALLOW FALSE
 )
 set(NULLCLAP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
