@@ -1,15 +1,18 @@
 #pragma once
 
-#include <JuceHeader.h>
+#include "MotionEnginePlugin.hpp"
+
+#include <juce_gui_basics/juce_gui_basics.h>
+
 #include <array>
+#include <functional>
 #include <memory>
 #include <vector>
-#include "PluginProcessor.h"
 
 class MotionCanvas final : public juce::Component
 {
 public:
-    explicit MotionCanvas(MotionEngineAudioProcessor& processor);
+    explicit MotionCanvas(MotionEnginePlugin& plugin);
 
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
@@ -28,59 +31,56 @@ private:
     juce::Point<float> worldToScreen(float x, float y) const;
     juce::Point<float> screenToWorld(juce::Point<float> point) const;
     float worldRadiusToPixels(float radius) const;
-    void setParameterPlain(const juce::String& id, float value);
+    void setParameter(clap_id id, double value);
     void beginZoneGesture();
     void endZoneGesture();
 
-    MotionEngineAudioProcessor& processor;
-    DragMode dragMode = DragMode::none;
-    int dragZone = -1;
-    int selectedZone = 0;
-    juce::Point<float> lastDragWorld;
-    double lastDragTimeMs = 0.0;
-    juce::Point<float> flickVelocity;
-    std::vector<juce::Point<float>> trail;
+    MotionEnginePlugin& plugin_;
+    DragMode dragMode_ = DragMode::none;
+    int dragZone_ = -1;
+    int selectedZone_ = 0;
+    juce::Point<float> lastDragWorld_;
+    double lastDragTimeMs_ = 0.0;
+    juce::Point<float> flickVelocity_;
+    std::vector<juce::Point<float>> trail_;
 };
 
 class OutputStrip final : public juce::Component
 {
 public:
-    OutputStrip(MotionEngineAudioProcessor& processor, int index);
+    OutputStrip(MotionEnginePlugin& plugin, int index);
 
     void paint(juce::Graphics&) override;
     void resized() override;
-    void update(const motion::MotionEngineCore::Snapshot& snapshot, const BridgeEngine::SlotStatus& status);
+    void sync(const motion::MotionEngineCore::Snapshot& snapshot, const BridgeEngine::SlotStatus& status);
 
 private:
     void configureCompactSlider(juce::Slider& slider);
+    void setOneShot(clap_id id, double value);
+    void bindSlider(juce::Slider& slider, clap_id id);
 
-    MotionEngineAudioProcessor& processor;
-    int index = 0;
-    float currentValue = 0.5f;
+    MotionEnginePlugin& plugin_;
+    int index_ = 0;
+    bool syncing_ = false;
+    float currentValue_ = 0.5f;
 
-    juce::Label indexLabel;
-    juce::ComboBox sourceBox;
-    juce::Slider minSlider;
-    juce::Slider maxSlider;
-    juce::ComboBox curveBox;
-    juce::Slider smoothSlider;
-    juce::TextButton mapButton { "MAP" };
-    juce::TextButton clearButton { "X" };
-    juce::Label targetLabel;
-
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> sourceAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> minAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> maxAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> curveAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> smoothAttachment;
+    juce::Label indexLabel_;
+    juce::ComboBox sourceBox_;
+    juce::Slider minSlider_;
+    juce::Slider maxSlider_;
+    juce::ComboBox curveBox_;
+    juce::Slider smoothSlider_;
+    juce::TextButton mapButton_ { "MAP" };
+    juce::TextButton clearButton_ { "X" };
+    juce::Label targetLabel_;
 };
 
-class MotionEngineAudioProcessorEditor final : public juce::AudioProcessorEditor,
-                                                private juce::Timer
+class MotionEngineEditor final : public juce::Component,
+                                 private juce::Timer
 {
 public:
-    explicit MotionEngineAudioProcessorEditor(MotionEngineAudioProcessor&);
-    ~MotionEngineAudioProcessorEditor() override;
+    explicit MotionEngineEditor(MotionEnginePlugin& plugin);
+    ~MotionEngineEditor() override;
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -89,53 +89,48 @@ private:
     void timerCallback() override;
     void configureSlider(juce::Slider& slider, const juce::String& suffix = {});
     void configureLabel(juce::Label& label, const juce::String& text);
+    void bindSlider(juce::Slider& slider, clap_id id);
+    void setOneShot(clap_id id, double value);
     void updateModelLabels();
-    void bindSelectedZone(int zone);
+    void selectZone(int zone);
+    void syncControls();
 
-    MotionEngineAudioProcessor& processor;
-    MotionCanvas canvas;
+    MotionEnginePlugin& plugin_;
+    MotionCanvas canvas_;
+    bool syncing_ = false;
+    int selectedZone_ = 0;
+    int displayedModel_ = -1;
 
-    juce::Label titleLabel;
-    juce::Label subtitleLabel;
-    juce::Label bridgeLabel;
-    juce::Label outputsTitleLabel;
+    juce::Label titleLabel_;
+    juce::Label subtitleLabel_;
+    juce::Label bridgeLabel_;
+    juce::Label outputsTitleLabel_;
 
-    juce::ComboBox modelBox;
-    juce::ComboBox constraintBox;
-    juce::TextButton hitButton { "HIT" };
-    juce::TextButton resetButton { "RESET" };
+    juce::ComboBox modelBox_;
+    juce::ComboBox constraintBox_;
+    juce::TextButton hitButton_ { "HIT" };
+    juce::TextButton resetButton_ { "RESET" };
 
-    juce::Slider timeSlider;
-    juce::Slider energySlider;
-    juce::Slider dampingSlider;
-    juce::Slider audioKickSlider;
-    juce::Label timeLabel;
-    juce::Label energyLabel;
-    juce::Label dampingLabel;
-    juce::Label audioKickLabel;
+    juce::Slider timeSlider_;
+    juce::Slider energySlider_;
+    juce::Slider dampingSlider_;
+    juce::Slider audioKickSlider_;
+    juce::Label timeLabel_;
+    juce::Label energyLabel_;
+    juce::Label dampingLabel_;
+    juce::Label audioKickLabel_;
 
-    std::array<juce::Slider, 4> motionSliders;
-    std::array<juce::Label, 4> motionLabels;
+    std::array<juce::Slider, 4> motionSliders_;
+    std::array<juce::Label, 4> motionLabels_;
 
-    juce::ComboBox zoneBox;
-    juce::Slider zoneRadiusSlider;
-    juce::Slider zoneFalloffSlider;
-    juce::Label zoneLabel;
-    juce::Label zoneRadiusLabel;
-    juce::Label zoneFalloffLabel;
+    juce::ComboBox zoneBox_;
+    juce::Slider zoneRadiusSlider_;
+    juce::Slider zoneFalloffSlider_;
+    juce::Label zoneLabel_;
+    juce::Label zoneRadiusLabel_;
+    juce::Label zoneFalloffLabel_;
 
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modelAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> constraintAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> timeAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> energyAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> dampingAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> audioKickAttachment;
-    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 4> motionAttachments;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> zoneRadiusAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> zoneFalloffAttachment;
+    std::array<std::unique_ptr<OutputStrip>, motion::kNumOutputs> outputStrips_;
 
-    std::array<std::unique_ptr<OutputStrip>, motion::kNumOutputs> outputStrips;
-    int displayedModel = -1;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MotionEngineAudioProcessorEditor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MotionEngineEditor)
 };
