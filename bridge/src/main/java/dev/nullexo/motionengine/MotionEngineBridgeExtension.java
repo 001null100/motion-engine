@@ -72,6 +72,12 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
             targets[i].exists().markInterested();
             targets[i].name().markInterested();
             targets[i].value().markInterested();
+
+            // LastClickedParameter is a live hover tracker for native Bitwig controls.
+            // Leaving all eight unlocked makes all eight Motion Engine trackers follow
+            // every parameter the mouse passes over. Keep unused slots pinned/inert;
+            // only the slot currently being armed is ever unlocked.
+            lastClicked[i].isLocked().set(true);
         }
 
         startNetworkThread();
@@ -87,7 +93,7 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
         {
             restoreMappedAutomation(i);
             if (lastClicked[i] != null)
-                lastClicked[i].isLocked().set(false);
+                lastClicked[i].isLocked().set(true);
         }
 
         running.set(false);
@@ -115,7 +121,9 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
             if (unmapRequested[slot].getAndSet(false))
             {
                 restoreMappedAutomation(slot);
-                lastClicked[slot].isLocked().set(false);
+                // Do not leave a cleared slot following hover. It should become inert
+                // until MAP explicitly arms it again.
+                lastClicked[slot].isLocked().set(true);
                 mapped[slot] = false;
                 armed[slot] = false;
                 targetNames[slot] = "None";
@@ -126,13 +134,21 @@ public final class MotionEngineBridgeExtension extends ControllerExtension
             if (mapRequested[slot].getAndSet(false))
             {
                 restoreMappedAutomation(slot);
-                lastClicked[slot].isLocked().set(false);
                 mapped[slot] = false;
                 targetNames[slot] = "None";
                 resetCandidate(slot);
 
+                // Exactly one capture tracker is allowed to follow the mouse/touch
+                // target. Existing mapped slots remain locked to their targets and
+                // all unused slots remain inert.
                 for (int other = 0; other < OUTPUTS; ++other)
+                {
                     armed[other] = other == slot;
+                    if (other == slot)
+                        lastClicked[other].isLocked().set(false);
+                    else if (!mapped[other])
+                        lastClicked[other].isLocked().set(true);
+                }
 
                 host.showPopupNotification("Motion " + (slot + 1) + ": move/drag the target parameter");
             }
