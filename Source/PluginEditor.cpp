@@ -476,10 +476,18 @@ void OutputStrip::sync(const motion::MotionEngineCore::Snapshot& snapshot, const
 {
     const auto& id = motion::ids::outputs[static_cast<std::size_t>(index_)];
     syncing_ = true;
-    sourceBox_.setSelectedItemIndex(plugin_.parameterInt(id.source), juce::dontSendNotification);
+
+    const int sourceIndex = plugin_.parameterInt(id.source);
+    if (!sourceBox_.isPopupActive() && sourceBox_.getSelectedItemIndex() != sourceIndex)
+        sourceBox_.setSelectedItemIndex(sourceIndex, juce::dontSendNotification);
+
     minSlider_.setValue(plugin_.parameterValue(id.minimum), juce::dontSendNotification);
     maxSlider_.setValue(plugin_.parameterValue(id.maximum), juce::dontSendNotification);
-    curveBox_.setSelectedItemIndex(plugin_.parameterInt(id.curve), juce::dontSendNotification);
+
+    const int curveIndex = plugin_.parameterInt(id.curve);
+    if (!curveBox_.isPopupActive() && curveBox_.getSelectedItemIndex() != curveIndex)
+        curveBox_.setSelectedItemIndex(curveIndex, juce::dontSendNotification);
+
     smoothSlider_.setValue(plugin_.parameterValue(id.smoothing), juce::dontSendNotification);
     syncing_ = false;
 
@@ -788,8 +796,15 @@ void MotionEngineEditor::selectZone(int zone)
 void MotionEngineEditor::syncControls()
 {
     syncing_ = true;
-    modelBox_.setSelectedItemIndex(plugin_.parameterInt(motion::ids::model), juce::dontSendNotification);
-    constraintBox_.setSelectedItemIndex(plugin_.parameterInt(motion::ids::constraint), juce::dontSendNotification);
+
+    const int modelIndex = plugin_.parameterInt(motion::ids::model);
+    if (!modelBox_.isPopupActive() && modelBox_.getSelectedItemIndex() != modelIndex)
+        modelBox_.setSelectedItemIndex(modelIndex, juce::dontSendNotification);
+
+    const int constraintIndex = plugin_.parameterInt(motion::ids::constraint);
+    if (!constraintBox_.isPopupActive() && constraintBox_.getSelectedItemIndex() != constraintIndex)
+        constraintBox_.setSelectedItemIndex(constraintIndex, juce::dontSendNotification);
+
     timeSlider_.setValue(plugin_.parameterValue(motion::ids::timeScale), juce::dontSendNotification);
     energySlider_.setValue(plugin_.parameterValue(motion::ids::energy), juce::dontSendNotification);
     dampingSlider_.setValue(plugin_.parameterValue(motion::ids::globalDamping), juce::dontSendNotification);
@@ -798,7 +813,10 @@ void MotionEngineEditor::syncControls()
     motionSliders_[1].setValue(plugin_.parameterValue(motion::ids::motionB), juce::dontSendNotification);
     motionSliders_[2].setValue(plugin_.parameterValue(motion::ids::motionC), juce::dontSendNotification);
     motionSliders_[3].setValue(plugin_.parameterValue(motion::ids::motionD), juce::dontSendNotification);
-    zoneBox_.setSelectedItemIndex(selectedZone_, juce::dontSendNotification);
+
+    if (!zoneBox_.isPopupActive() && zoneBox_.getSelectedItemIndex() != selectedZone_)
+        zoneBox_.setSelectedItemIndex(selectedZone_, juce::dontSendNotification);
+
     const auto& zone = motion::ids::zones[static_cast<std::size_t>(selectedZone_)];
     zoneRadiusSlider_.setValue(plugin_.parameterValue(zone.radius), juce::dontSendNotification);
     zoneFalloffSlider_.setValue(plugin_.parameterValue(zone.falloff), juce::dontSendNotification);
