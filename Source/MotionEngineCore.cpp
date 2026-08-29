@@ -1,4 +1,5 @@
 #include "MotionEngineCore.h"
+#include "MotionPaths.h"
 
 #include <algorithm>
 #include <cmath>
@@ -108,6 +109,7 @@ void MotionEngineCore::AtomicSnapshot::store(const Snapshot& value) noexcept
     impact.store(value.impact, std::memory_order_relaxed);
     audioEnvelope.store(value.audioEnvelope, std::memory_order_relaxed);
     transient.store(value.transient, std::memory_order_relaxed);
+    trajectoryPhase.store(value.trajectoryPhase, std::memory_order_relaxed);
     for (int i = 0; i < kNumZones; ++i)
         zones[static_cast<std::size_t>(i)].store(value.zones[static_cast<std::size_t>(i)], std::memory_order_relaxed);
     for (int i = 0; i < kNumOutputs; ++i)
@@ -128,6 +130,7 @@ MotionEngineCore::Snapshot MotionEngineCore::AtomicSnapshot::load() const noexce
     value.impact = impact.load(std::memory_order_relaxed);
     value.audioEnvelope = audioEnvelope.load(std::memory_order_relaxed);
     value.transient = transient.load(std::memory_order_relaxed);
+    value.trajectoryPhase = trajectoryPhase.load(std::memory_order_relaxed);
     for (int i = 0; i < kNumZones; ++i)
         value.zones[static_cast<std::size_t>(i)] = zones[static_cast<std::size_t>(i)].load(std::memory_order_relaxed);
     for (int i = 0; i < kNumOutputs; ++i)
@@ -151,6 +154,7 @@ void MotionEngineCore::resetNow() noexcept
     lastModel_ = -1;
     accumulator_ = 0.0;
     elapsed_ = 0.0;
+    trajectoryPhase_ = 0.0;
     audioEnvelope_ = 0.0;
     audioBalance_ = 0.0;
     transientEnvelope_ = 0.0;
@@ -274,6 +278,7 @@ void MotionEngineCore::analyseAudio(const AudioAnalysis& input) noexcept
 void MotionEngineCore::resetForModel(int model) noexcept
 {
     lastModel_ = clamp(model, 0, 9);
+    trajectoryPhase_ = 0.0;
     vx_ = vy_ = 0.0;
     pendulumVelocity_ = 0.0;
     noiseX_ = noiseY_ = 0.0;
@@ -284,13 +289,12 @@ void MotionEngineCore::resetForModel(int model) noexcept
     {
         case 0:
         {
-            const double radius = 0.22 + clampUnit(parameters_.motion[0]) * 0.68;
-            const double rotation = clampUnit(parameters_.motion[2]) * kPi;
-            const double speed = 0.18 + clampUnit(parameters_.motion[3]) * 1.7;
-            x_ = std::cos(rotation) * radius;
-            y_ = std::sin(rotation) * radius;
-            vx_ = -std::sin(rotation) * speed;
-            vy_ = std::cos(rotation) * speed;
+            const auto point = paths::orbitPoint(parameters_.motion[0], parameters_.motion[1], parameters_.motion[2], trajectoryPhase_);
+            const auto velocity = paths::orbitVelocity(parameters_.motion[0], parameters_.motion[1], parameters_.motion[2], parameters_.motion[3], trajectoryPhase_);
+            x_ = point.x;
+            y_ = point.y;
+            vx_ = velocity.x;
+            vy_ = velocity.y;
             break;
         }
 
@@ -329,14 +333,12 @@ void MotionEngineCore::resetForModel(int model) noexcept
 
         case 6:
         {
-            const double phase = clampUnit(parameters_.motion[2]) * kTwoPi;
-            const double rotation = (clampUnit(parameters_.motion[3]) - 0.5) * kPi;
-            const double co = std::cos(rotation);
-            const double so = std::sin(rotation);
-            const double rawX = 0.0;
-            const double rawY = 0.76 * std::sin(phase);
-            x_ = co * rawX - so * rawY;
-            y_ = so * rawX + co * rawY;
+            const auto point = paths::lissajousPoint(parameters_.motion[1], parameters_.motion[2], parameters_.motion[3], trajectoryPhase_);
+            const auto velocity = paths::lissajousVelocity(parameters_.motion[0], parameters_.motion[1], parameters_.motion[2], parameters_.motion[3], trajectoryPhase_);
+            x_ = point.x;
+            y_ = point.y;
+            vx_ = velocity.x;
+            vy_ = velocity.y;
             break;
         }
 
@@ -389,7 +391,19 @@ void MotionEngineCore::step(double dt) noexcept
         vx_ = throwVX_.load(std::memory_order_relaxed);
         vy_ = throwVY_.load(std::memory_order_relaxed);
 
-        if (model == 8)
+        if (model == 0)
+        {
+            const double radius = paths::orbitRadius(parameters_.motion[0]);
+            const double aspect = paths::orbitAspect(parameters_.motion[1]);
+            const double rotation = clampUnit(parameters_.motion[2]) * kPi;
+            const double co = std::cos(rotation);
+            const double so = std::sin(rotation);
+            const double localX = co * x_ + so * y_;
+            const double localY = -so * x_ + co * y_;
+            trajectoryPhase_ = paths::wrapPhase(std::atan2(localY / std::max(1.0e-6, radius * aspect),
+                                                           localX / std::max(1.0e-6, radius)));
+        }
+        else if (model == 8)
         {
             const double throwSpeed = std::hypot(vx_, vy_);
             noiseX_ = clamp(std::max(noiseX_, std::hypot(x_, y_) + throwSpeed * 0.035), 0.0, 1.0);
@@ -413,13 +427,9 @@ void MotionEngineCore::step(double dt) noexcept
         switch (model)
         {
             case 0:
-            {
-                const double force = 0.7 + 1.7 * energy;
-                const double hitDirection = std::atan2(y_, x_) + 0.48;
-                vx_ += std::cos(hitDirection) * force;
-                vy_ += std::sin(hitDirection) * force;
+            case 6:
+                // Deterministic trajectory modes do not leave their displayed path.
                 break;
-            }
 
             case 2:
             {
@@ -432,15 +442,6 @@ void MotionEngineCore::step(double dt) noexcept
                 const double force = (1.0 + 4.5 * energy) * (0.55 + 0.45 * a);
                 vx_ += tx * force;
                 vy_ += ty * force;
-                break;
-            }
-
-            case 6:
-            {
-                const double force = 0.6 + 2.2 * energy;
-                const double angle = elapsed_ * 1.7 + c * kTwoPi;
-                vx_ += std::cos(angle) * force;
-                vy_ += std::sin(angle) * force;
                 break;
             }
 
@@ -479,41 +480,13 @@ void MotionEngineCore::step(double dt) noexcept
     {
         case 0:
         {
-            const double targetRadius = 0.22 + a * 0.68;
-            const double aspect = 1.0 - b * 0.65;
-            const double orientation = c * kPi;
-            const double co = std::cos(orientation);
-            const double so = std::sin(orientation);
-            const double lx = co * x_ + so * y_;
-            const double ly = -so * x_ + co * y_;
-            const double lvx = co * vx_ + so * vy_;
-            const double lvy = -so * vx_ + co * vy_;
-            const double qx = lx;
-            const double qy = ly / aspect;
-            const double ellipseRadius = std::max(1.0e-5, std::hypot(qx, qy));
-            double rx = qx / ellipseRadius;
-            double ry = qy / (ellipseRadius * aspect);
-            const double normalLength = std::max(1.0e-5, std::hypot(rx, ry));
-            rx /= normalLength;
-            ry /= normalLength;
-            const double tx = -ry;
-            const double ty = rx;
-            const double radialVelocity = lvx * rx + lvy * ry;
-            const double tangentialVelocity = lvx * tx + lvy * ty;
-            const double radialError = ellipseRadius - targetRadius;
-            constexpr double pull = 8.0;
-            constexpr double radialDamping = 3.0;
-            constexpr double tangentDrive = 2.0;
-            const double targetSpeed = 0.18 + d * 1.7;
-            const double radialAcceleration = -pull * radialError - radialDamping * radialVelocity;
-            const double tangentAcceleration = (targetSpeed - tangentialVelocity) * tangentDrive;
-            const double lax = rx * radialAcceleration + tx * tangentAcceleration;
-            const double lay = ry * radialAcceleration + ty * tangentAcceleration;
-            vx_ += (co * lax - so * lay) * dt;
-            vy_ += (so * lax + co * lay) * dt;
-            x_ += vx_ * dt;
-            y_ += vy_ * dt;
-            containBody(true, 0.52, 0.0);
+            trajectoryPhase_ = paths::wrapPhase(trajectoryPhase_ + paths::kTwoPi * paths::orbitRateHz(d) * dt);
+            const auto point = paths::orbitPoint(a, b, c, trajectoryPhase_);
+            const auto velocity = paths::orbitVelocity(a, b, c, d, trajectoryPhase_);
+            x_ = point.x;
+            y_ = point.y;
+            vx_ = velocity.x;
+            vy_ = velocity.y;
             break;
         }
 
@@ -646,35 +619,18 @@ void MotionEngineCore::step(double dt) noexcept
 
         case 6:
         {
-            // Coupled oscillators generate a rich but predictable geometric path.
-            // The body follows the analytic target with a little inertia so direct
-            // drag/throw gestures still feel physical rather than snapping back.
-            const double rateHz = 0.08 + a * 1.35;
-            const double ratio = 1.0 + b * 2.5;
-            const double phase = c * kTwoPi;
-            const double rotation = (d - 0.5) * kPi;
-            const double t = elapsed_ * kTwoPi * rateHz;
-            const double rawX = 0.76 * std::sin(t);
-            const double rawY = 0.76 * std::sin(t * ratio + phase);
-            const double co = std::cos(rotation);
-            const double so = std::sin(rotation);
-            const double targetX = co * rawX - so * rawY;
-            const double targetY = so * rawX + co * rawY;
-            constexpr double pull = 25.0;
-            constexpr double damping = 8.0;
-
-            vx_ += ((targetX - x_) * pull - vx_ * damping) * dt;
-            vy_ += ((targetY - y_) * pull - vy_ * damping) * dt;
-            x_ += vx_ * dt;
-            y_ += vy_ * dt;
-            containBody(false, 0.0, 0.0);
+            trajectoryPhase_ = paths::wrapPhase(trajectoryPhase_ + paths::kTwoPi * paths::lissajousRateHz(a) * dt);
+            const auto point = paths::lissajousPoint(b, c, d, trajectoryPhase_);
+            const auto velocity = paths::lissajousVelocity(a, b, c, d, trajectoryPhase_);
+            x_ = point.x;
+            y_ = point.y;
+            vx_ = velocity.x;
+            vy_ = velocity.y;
             break;
         }
 
         case 7:
         {
-            // A musical trigger model: HIT supplies the initial vector; Rebound sets
-            // the center spring frequency and Decay controls how long it rings.
             const double rebound = 2.0 + b * 28.0;
             const double decay = 0.35 + c * 6.0;
             vx_ += -rebound * x_ * dt;
@@ -733,7 +689,9 @@ void MotionEngineCore::step(double dt) noexcept
             break;
     }
 
-    if (model != 8)
+    // Orbit and Lissajous are deterministic path generators. Applying global
+    // velocity forces to them would make the body leave the route shown in the UI.
+    if (model != 0 && model != 6 && model != 8)
         applyGlobalForces(dt);
 
     impactEnvelope_ *= std::exp(-dt * 10.0);
@@ -808,6 +766,7 @@ void MotionEngineCore::publishSnapshot(double realDt) noexcept
     next.impact = static_cast<float>(clampUnit(impactEnvelope_));
     next.audioEnvelope = static_cast<float>(clampUnit(audioEnvelope_ * 2.5));
     next.transient = static_cast<float>(clampUnit(transientEnvelope_));
+    next.trajectoryPhase = static_cast<float>(paths::wrapPhase(trajectoryPhase_));
 
     for (int zone = 0; zone < kNumZones; ++zone)
     {
