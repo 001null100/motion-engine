@@ -386,6 +386,9 @@ OutputStrip::OutputStrip(MotionEnginePlugin& plugin, int index) : plugin_(plugin
     styleCombo(curveBox_);
     styleButton(mapButton_, accent);
     styleButton(clearButton_, accent2);
+    mapButton_.setButtonText("AUX " + juce::String(index_ + 1));
+    mapButton_.setInterceptsMouseClicks(false, false);
+    clearButton_.setVisible(false);
 
     int item = 1;
     for (const auto name : motion::MotionEngineCore::sourceNames())
@@ -439,8 +442,9 @@ OutputStrip::OutputStrip(MotionEnginePlugin& plugin, int index) : plugin_(plugin
     bindSlider(maxSlider_, id.maximum);
     bindSlider(smoothSlider_, id.smoothing);
 
-    mapButton_.onClick = [this] { plugin_.bridge().requestMap(index_); };
-    clearButton_.onClick = [this] { plugin_.bridge().requestUnmap(index_); };
+    // Direct controller-target mapping was retired because Bitwig exposes
+    // LastClickedParameter proxies publicly. Motion N aux -> Audio Rate is the
+    // supported target-routing path and cannot capture arbitrary host parameters.
 }
 
 void OutputStrip::configureCompactSlider(juce::Slider& slider)
@@ -495,8 +499,8 @@ void OutputStrip::resized()
     sourceBox_.setBounds(top.removeFromLeft(142).reduced(2, 1));
     minSlider_.setBounds(top.removeFromLeft(66).reduced(2, 1));
     maxSlider_.setBounds(top.removeFromLeft(66).reduced(2, 1));
-    clearButton_.setBounds(top.removeFromRight(28).reduced(2, 1));
-    mapButton_.setBounds(top.removeFromRight(56).reduced(2, 1));
+    clearButton_.setBounds({});
+    mapButton_.setBounds(top.removeFromRight(68).reduced(2, 1));
     auto bottom = area.removeFromBottom(27);
     curveBox_.setBounds(bottom.removeFromLeft(108).reduced(2, 1));
     smoothSlider_.setBounds(bottom.removeFromLeft(122).reduced(2, 1));
@@ -523,27 +527,10 @@ void OutputStrip::sync(const motion::MotionEngineCore::Snapshot& snapshot, const
     syncing_ = false;
 
     currentValue_ = snapshot.outputs[static_cast<std::size_t>(index_)];
-    if (status.armed)
-    {
-        targetLabel_.setText("move target parameter...", juce::dontSendNotification);
-        targetLabel_.setColour(juce::Label::textColourId, warm);
-        mapButton_.setButtonText("ARMED");
-        mapButton_.setColour(juce::TextButton::buttonColourId, warm.withAlpha(0.28f));
-    }
-    else if (status.mapped)
-    {
-        targetLabel_.setText(toJuce(status.targetName), juce::dontSendNotification);
-        targetLabel_.setColour(juce::Label::textColourId, text);
-        mapButton_.setButtonText("MAP");
-        mapButton_.setColour(juce::TextButton::buttonColourId, accent.withAlpha(0.28f));
-    }
-    else
-    {
-        targetLabel_.setText("unmapped | aux: Motion " + juce::String(index_ + 1), juce::dontSendNotification);
-        targetLabel_.setColour(juce::Label::textColourId, muted);
-        mapButton_.setButtonText("MAP");
-        mapButton_.setColour(juce::TextButton::buttonColourId, accent.withAlpha(0.12f));
-    }
+    targetLabel_.setText("Motion " + juce::String(index_ + 1) + " -> Bitwig Audio Rate", juce::dontSendNotification);
+    targetLabel_.setColour(juce::Label::textColourId, muted);
+    mapButton_.setButtonText("AUX " + juce::String(index_ + 1));
+    mapButton_.setColour(juce::TextButton::buttonColourId, accent.withAlpha(0.16f));
     repaint();
 }
 
@@ -574,7 +561,7 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
     modelInfoLabel_.setJustificationType(juce::Justification::centredRight);
     modelInfoLabel_.setMinimumHorizontalScale(0.72f);
 
-    outputsTitleLabel_.setText("MOTION OUTPUTS", juce::dontSendNotification);
+    outputsTitleLabel_.setText("MOTION OUTPUTS  ·  SAFE AUX ROUTING", juce::dontSendNotification);
     outputsTitleLabel_.setFont(juce::FontOptions(14.0f, juce::Font::bold));
     outputsTitleLabel_.setColour(juce::Label::textColourId, text);
 
