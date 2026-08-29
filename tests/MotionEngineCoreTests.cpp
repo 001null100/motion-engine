@@ -43,6 +43,20 @@ bool validate(const motion::MotionEngineCore::Snapshot& snapshot, int model, int
             return fail("motion output left 0..1");
     return true;
 }
+
+bool constraintSatisfied(const motion::MotionEngineCore::Snapshot& snapshot, int constraint)
+{
+    constexpr float epsilon = 2.0e-3f;
+    switch (constraint)
+    {
+        case 1: return std::abs(snapshot.y) <= epsilon && std::abs(snapshot.vy) <= epsilon;
+        case 2: return std::abs(snapshot.x) <= epsilon && std::abs(snapshot.vx) <= epsilon;
+        case 3: return std::abs(snapshot.x - snapshot.y) <= epsilon
+                    && std::abs(snapshot.vx - snapshot.vy) <= epsilon;
+        case 4: return std::abs(std::hypot(snapshot.x, snapshot.y) - 0.72f) <= 3.0e-3f;
+        default: return true;
+    }
+}
 } // namespace
 
 int main()
@@ -69,7 +83,7 @@ int main()
             value = std::clamp(value, 0.0, 1.0);
 
         parameters.outputs[0].minimum = 0.85;
-        parameters.outputs[0].maximum = 0.15; // Exercise inverted ranges.
+        parameters.outputs[0].maximum = 0.15;
         parameters.outputs[1].smoothingMs = 0.0;
         parameters.outputs[2].smoothingMs = 250.0;
 
@@ -102,20 +116,84 @@ int main()
         }
     }
 
-    // Exercise every geometric constraint independently of model switching.
-    for (int constraint = 1; constraint <= 4; ++constraint)
+    // Constraints are projections, so they must remain exact for every model,
+    // including Orbit, without feeding the projection back into the model physics.
+    for (int model = 0; model < 10; ++model)
+    {
+        for (int constraint = 1; constraint <= 4; ++constraint)
+        {
+            motion::Parameters parameters;
+            parameters.model = model;
+            parameters.constraint = constraint;
+            parameters.motion = { 0.7, 0.55, 0.35, 0.6 };
+            core.setParameters(parameters);
+            core.requestReset();
+
+            for (int step = 0; step < 360; ++step)
+            {
+                core.process(1.0 / 240.0, {});
+                const auto snapshot = core.getSnapshot();
+                if (!validate(snapshot, 100 + model * 10 + constraint, step))
+                    return 1;
+                if (!constraintSatisfied(snapshot, constraint))
+                {
+                    std::cerr << "constraint " << constraint << " failed for model " << model
+                              << " at step " << step << '\n';
+                    return 1;
+                }
+            }
+        }
+    }
+
+    // Pendulum must not teleport to Length on the first tick after an over-length drag.
     {
         motion::Parameters parameters;
-        parameters.model = 5;
-        parameters.constraint = constraint;
-        parameters.motion = { 0.7, 0.8, 0.25, 0.4 };
+        parameters.model = 2;
+        parameters.motion = { 0.1, 0.5, 0.5, 0.5 };
+        parameters.globalDamping = 0.0;
+        parameters.audioKick = 0.0;
         core.setParameters(parameters);
         core.requestReset();
-        for (int step = 0; step < 480; ++step)
+        core.process(1.0 / 240.0, {});
+        core.beginDrag(0.88f, -0.35f);
+        core.process(1.0 / 240.0, {});
+        core.endDrag(0.0f, 0.0f);
+        core.process(1.0 / 240.0, {});
+
+        const auto snapshot = core.getSnapshot();
+        const double radiusFromAnchor = std::hypot(snapshot.x, snapshot.y - 0.12f);
+        const double requestedLength = 0.28 + 0.1 * 0.67;
+        if (radiusFromAnchor < requestedLength + 0.25)
         {
-            core.process(1.0 / 240.0, {});
-            if (!validate(core.getSnapshot(), 100 + constraint, step))
-                return 1;
+            std::cerr << "pendulum snapped to length after drag\n";
+            return 1;
+        }
+    }
+
+    // Balanced stereo should keep Follower centered on X while level drives Y.
+    {
+        motion::Parameters parameters;
+        parameters.model = 9;
+        parameters.motion = { 0.8, 0.55, 0.7, 0.5 };
+        parameters.globalDamping = 0.0;
+        parameters.audioKick = 0.0;
+        core.setParameters(parameters);
+        core.requestReset();
+
+        motion::AudioAnalysis audio;
+        audio.channels = 2;
+        audio.leftRms = 0.22;
+        audio.rightRms = 0.22;
+        audio.rms = 0.22;
+
+        for (int i = 0; i < 480; ++i)
+            core.process(1.0 / 240.0, audio);
+
+        const auto snapshot = core.getSnapshot();
+        if (std::abs(snapshot.x) > 0.05f || snapshot.y < -0.1f)
+        {
+            std::cerr << "follower did not map balanced stereo to centered X / level-driven Y\n";
+            return 1;
         }
     }
 
