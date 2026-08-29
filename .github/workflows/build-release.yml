@@ -59,6 +59,15 @@ jobs:
           & $validator.FullName validate $clap.FullName --only-failed
           if ($LASTEXITCODE -ne 0) { throw "clap-validator failed with exit code $LASTEXITCODE" }
 
+      - name: Enforce safe Bitwig bridge
+        shell: pwsh
+        run: |
+          $unsafe = Get-ChildItem bridge/src -Recurse -File -Filter "*.java" | Select-String -Pattern "LastClickedParameter|createLastClickedParameter"
+          if ($unsafe) {
+            $unsafe | ForEach-Object { Write-Host $_ }
+            throw "Unsafe public Bitwig target proxy found in bridge source"
+          }
+
       - name: Build Bitwig bridge
         shell: pwsh
         run: |
@@ -92,4 +101,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "v2-beta-${{ github.run_number }}"
-          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v2 beta ${{ github.run_number }}" --notes "Motion Engine v2 beta from ${{ github.sha }}. Native null-clap Windows build with the polished editor, session-isolated Bitwig bridge, eight audio-rate modulation outputs, and the expanded motion-model regression suite. The CLAP module passes core tests and clap-validator before publication."
+          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v2 beta ${{ github.run_number }}" --notes "Motion Engine v2 beta from ${{ github.sha }}. Safe Bitwig bridge v0.3 creates no public target proxies; modulation uses the eight bipolar Motion 1-8 CLAP auxiliary outputs through Bitwig Audio Rate. Native CLAP, physics tests, bridge safety gate, bridge build, and clap-validator all pass before publication."
