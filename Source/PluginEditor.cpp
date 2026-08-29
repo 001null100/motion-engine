@@ -149,55 +149,6 @@ void MotionCanvas::paint(juce::Graphics& g)
     const auto snapshot = plugin_.motionCore().getSnapshot();
     const int model = plugin_.parameterInt(motion::ids::model);
 
-    if (model == 0)
-    {
-        const float radius = 0.22f + static_cast<float>(plugin_.parameterValue(motion::ids::motionA)) * 0.68f;
-        const float aspect = 1.0f - static_cast<float>(plugin_.parameterValue(motion::ids::motionB)) * 0.65f;
-        const float rotation = static_cast<float>(plugin_.parameterValue(motion::ids::motionC)) * juce::MathConstants<float>::pi;
-        const float co = std::cos(rotation);
-        const float so = std::sin(rotation);
-        juce::Path orbitGuide;
-        constexpr int samples = 96;
-        for (int i = 0; i <= samples; ++i)
-        {
-            const float phase = juce::MathConstants<float>::twoPi * static_cast<float>(i) / static_cast<float>(samples);
-            const float localX = radius * std::cos(phase);
-            const float localY = radius * aspect * std::sin(phase);
-            const auto point = worldToScreen(co * localX - so * localY, so * localX + co * localY);
-            if (i == 0) orbitGuide.startNewSubPath(point); else orbitGuide.lineTo(point);
-        }
-        g.setColour(accent.withAlpha(0.20f));
-        g.strokePath(orbitGuide, juce::PathStrokeType(1.25f));
-    }
-    else if (model == 6)
-    {
-        const float ratio = 1.0f + static_cast<float>(plugin_.parameterValue(motion::ids::motionB)) * 2.5f;
-        const float phaseOffset = static_cast<float>(plugin_.parameterValue(motion::ids::motionC)) * juce::MathConstants<float>::twoPi;
-        const float rotation = (static_cast<float>(plugin_.parameterValue(motion::ids::motionD)) - 0.5f) * juce::MathConstants<float>::pi;
-        const float co = std::cos(rotation);
-        const float so = std::sin(rotation);
-        juce::Path guide;
-        constexpr int samples = 180;
-        for (int i = 0; i <= samples; ++i)
-        {
-            const float t = juce::MathConstants<float>::twoPi * 2.0f * static_cast<float>(i) / static_cast<float>(samples);
-            const float rawX = 0.76f * std::sin(t);
-            const float rawY = 0.76f * std::sin(t * ratio + phaseOffset);
-            const auto point = worldToScreen(co * rawX - so * rawY, so * rawX + co * rawY);
-            if (i == 0) guide.startNewSubPath(point); else guide.lineTo(point);
-        }
-        g.setColour(accent2.withAlpha(0.16f));
-        g.strokePath(guide, juce::PathStrokeType(1.15f));
-    }
-    else if (model == 7)
-    {
-        const float direction = static_cast<float>(plugin_.parameterValue(motion::ids::motionD)) * juce::MathConstants<float>::twoPi;
-        const auto endpoint = worldToScreen(std::cos(direction) * 0.78f, std::sin(direction) * 0.78f);
-        g.setColour(warm.withAlpha(0.28f));
-        g.drawLine(centre.x, centre.y, endpoint.x, endpoint.y, 1.5f);
-        g.fillEllipse({ endpoint.x - 3.0f, endpoint.y - 3.0f, 6.0f, 6.0f });
-    }
-
     for (int zone = 0; zone < motion::kNumZones; ++zone)
     {
         const auto& id = motion::ids::zones[static_cast<std::size_t>(zone)];
