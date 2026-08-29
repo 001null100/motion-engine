@@ -4,6 +4,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <algorithm>
 #include <array>
 #include <functional>
 #include <memory>
