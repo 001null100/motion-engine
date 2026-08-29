@@ -21,13 +21,9 @@ class StableComboBox final : public juce::ComboBox
 public:
     StableComboBox()
     {
-        // Keep ComboBox's drawing/value model, but make this component itself own
-        // mouse input so an internal child cannot fall back to the stock popup path.
         setInterceptsMouseClicks(true, false);
     }
 
-    // Retained for existing call sites. The old timer-delay workaround is no longer
-    // the mechanism that makes selection reliable; popupOpen_ is authoritative.
     void armSyncHold(double milliseconds = 0.0) noexcept
     {
         syncHoldUntilMs_ = std::max(syncHoldUntilMs_, juce::Time::getMillisecondCounterHiRes() + milliseconds);
@@ -85,8 +81,10 @@ private:
     double syncHoldUntilMs_ = 0.0;
 };
 
-// Drawn as a child of MotionCanvas so deterministic models can show an explicit
-// route without complicating the simulation renderer. It never receives mouse input.
+// Deterministic route preview. Orbit and Lissajous are simulated using the same
+// integration equations as the audio-thread models instead of drawing their ideal
+// attractors. This matters because inertia, world drag and world-bound collisions
+// can move the body noticeably away from the mathematical target curve.
 class RoutePreviewOverlay final : public juce::Component,
                                   private juce::ComponentListener
 {
@@ -108,7 +106,7 @@ public:
     void paint(juce::Graphics& g) override
     {
         const int model = plugin_.parameterInt(motion::ids::model);
-        if (model != 0 && model != 6 && model != 7 && model != 8)
+        if (model != 0 && model != 6 && model != 7)
             return;
 
         const auto world = worldBounds();
@@ -122,15 +120,25 @@ public:
             paintOrbit(g, world);
         else if (model == 6)
             paintLissajous(g, world);
-        else if (model == 7)
+        else
             paintImpulse(g, world);
-        else if (model == 8)
-            paintDecay(g, world);
 
+        // The route component is a child of MotionCanvas, so JUCE paints it after
+        // the parent. Redraw the live body here so the route always reads as being
+        // underneath the body rather than slicing through it.
+        paintLiveBody(g, world);
         g.restoreState();
     }
 
 private:
+    struct SimState
+    {
+        double x = 0.0;
+        double y = 0.0;
+        double vx = 0.0;
+        double vy = 0.0;
+    };
+
     void componentMovedOrResized(juce::Component& component, bool, bool wasResized) override
     {
         if (&component == &parent_ && wasResized)
@@ -203,6 +211,27 @@ private:
         return path;
     }
 
+    static void contain(SimState& state, bool bounce, double restitution)
+    {
+        auto collide = [bounce, restitution](double& position, double& velocity)
+        {
+            if (position >= -1.0 && position <= 1.0)
+                return;
+            position = std::clamp(position, -1.0, 1.0);
+            velocity *= bounce ? -restitution : -0.15;
+        };
+        collide(state.x, state.vx);
+        collide(state.y, state.vy);
+    }
+
+    void applyWorldDrag(SimState& state, double dt) const
+    {
+        const double drag = std::clamp(plugin_.parameterValue(motion::ids::globalDamping), 0.0, 4.0);
+        const double factor = std::exp(-drag * dt);
+        state.vx *= factor;
+        state.vy *= factor;
+    }
+
     void drawArrow(juce::Graphics& g,
                    juce::Point<float> from,
                    juce::Point<float> to,
@@ -241,24 +270,24 @@ private:
         if (closed)
             route.closeSubPath();
 
-        g.setColour(colour.withAlpha(0.11f));
-        g.strokePath(route, juce::PathStrokeType(7.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour(colour.withAlpha(0.72f));
-        g.strokePath(route, juce::PathStrokeType(2.35f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.setColour(colour.withAlpha(0.12f));
+        g.strokePath(route, juce::PathStrokeType(7.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.setColour(colour.withAlpha(0.82f));
+        g.strokePath(route, juce::PathStrokeType(2.55f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
         const int markerCount = std::max(4, arrowCount * 2);
         for (int marker = 0; marker < markerCount; ++marker)
         {
             const std::size_t index = static_cast<std::size_t>((marker + 1) * (points.size() - 1) / (markerCount + 1));
             const float radius = marker % 2 == 0 ? 2.7f : 1.8f;
-            g.setColour(colour.withAlpha(marker % 2 == 0 ? 0.70f : 0.42f));
+            g.setColour(colour.withAlpha(marker % 2 == 0 ? 0.72f : 0.46f));
             g.fillEllipse(points[index].x - radius, points[index].y - radius, radius * 2.0f, radius * 2.0f);
         }
 
         for (int arrow = 0; arrow < arrowCount; ++arrow)
         {
             const std::size_t index = static_cast<std::size_t>((arrow + 1) * (points.size() - 2) / (arrowCount + 1)) + 1;
-            drawArrow(g, points[index - 1], points[index], colour.withAlpha(0.92f));
+            drawArrow(g, points[index - 1], points[index], colour.withAlpha(0.96f));
         }
     }
 
@@ -266,56 +295,159 @@ private:
     {
         auto label = world.reduced(10.0f).removeFromTop(20.0f);
         g.setFont(juce::FontOptions(10.5f, juce::Font::bold));
-        g.setColour(colour.withAlpha(0.78f));
+        g.setColour(colour.withAlpha(0.82f));
         g.drawText("ROUTE  " + text, label, juce::Justification::topLeft, false);
+    }
+
+    void stepOrbit(SimState& state, double dt) const
+    {
+        const double a = std::clamp(plugin_.parameterValue(motion::ids::motionA), 0.0, 1.0);
+        const double b = std::clamp(plugin_.parameterValue(motion::ids::motionB), 0.0, 1.0);
+        const double c = std::clamp(plugin_.parameterValue(motion::ids::motionC), 0.0, 1.0);
+        const double d = std::clamp(plugin_.parameterValue(motion::ids::motionD), 0.0, 1.0);
+        const double targetRadius = 0.22 + a * 0.68;
+        const double aspect = 1.0 - b * 0.65;
+        const double orientation = c * juce::MathConstants<double>::pi;
+        const double co = std::cos(orientation);
+        const double so = std::sin(orientation);
+        const double lx = co * state.x + so * state.y;
+        const double ly = -so * state.x + co * state.y;
+        const double lvx = co * state.vx + so * state.vy;
+        const double lvy = -so * state.vx + co * state.vy;
+        const double qx = lx;
+        const double qy = ly / aspect;
+        const double ellipseRadius = std::max(1.0e-5, std::hypot(qx, qy));
+        double rx = qx / ellipseRadius;
+        double ry = qy / (ellipseRadius * aspect);
+        const double normalLength = std::max(1.0e-5, std::hypot(rx, ry));
+        rx /= normalLength;
+        ry /= normalLength;
+        const double tx = -ry;
+        const double ty = rx;
+        const double radialVelocity = lvx * rx + lvy * ry;
+        const double tangentialVelocity = lvx * tx + lvy * ty;
+        const double radialError = ellipseRadius - targetRadius;
+        constexpr double pull = 8.0;
+        constexpr double radialDamping = 3.0;
+        constexpr double tangentDrive = 2.0;
+        const double targetSpeed = 0.18 + d * 1.7;
+        const double radialAcceleration = -pull * radialError - radialDamping * radialVelocity;
+        const double tangentAcceleration = (targetSpeed - tangentialVelocity) * tangentDrive;
+        const double lax = rx * radialAcceleration + tx * tangentAcceleration;
+        const double lay = ry * radialAcceleration + ty * tangentAcceleration;
+        state.vx += (co * lax - so * lay) * dt;
+        state.vy += (so * lax + co * lay) * dt;
+        state.x += state.vx * dt;
+        state.y += state.vy * dt;
+        contain(state, true, 0.52);
+        applyWorldDrag(state, dt);
     }
 
     void paintOrbit(juce::Graphics& g, juce::Rectangle<float> world)
     {
-        const float radius = 0.22f + static_cast<float>(plugin_.parameterValue(motion::ids::motionA)) * 0.68f;
-        const float aspect = 1.0f - static_cast<float>(plugin_.parameterValue(motion::ids::motionB)) * 0.65f;
-        const float rotation = static_cast<float>(plugin_.parameterValue(motion::ids::motionC)) * juce::MathConstants<float>::pi;
-        const float co = std::cos(rotation);
-        const float so = std::sin(rotation);
+        const double a = std::clamp(plugin_.parameterValue(motion::ids::motionA), 0.0, 1.0);
+        const double c = std::clamp(plugin_.parameterValue(motion::ids::motionC), 0.0, 1.0);
+        const double d = std::clamp(plugin_.parameterValue(motion::ids::motionD), 0.0, 1.0);
+        const double radius = 0.22 + a * 0.68;
+        const double rotation = c * juce::MathConstants<double>::pi;
+        const double speed = 0.18 + d * 1.7;
 
+        SimState state;
+        state.x = std::cos(rotation) * radius;
+        state.y = std::sin(rotation) * radius;
+        state.vx = -std::sin(rotation) * speed;
+        state.vy = std::cos(rotation) * speed;
+
+        constexpr double dt = 1.0 / 240.0;
+        const int warmupSteps = static_cast<int>(3.0 / dt);
+        for (int i = 0; i < warmupSteps; ++i)
+            stepOrbit(state, dt);
+
+        const double approximatePeriod = std::clamp(juce::MathConstants<double>::twoPi * std::max(0.2, radius) / std::max(0.08, speed), 1.25, 8.0);
+        const int totalSteps = std::max(240, static_cast<int>(approximatePeriod / dt));
+        const int stride = std::max(1, totalSteps / 220);
         std::vector<juce::Point<float>> points;
-        constexpr int samples = 160;
-        points.reserve(samples + 1);
-        for (int i = 0; i <= samples; ++i)
+        points.reserve(static_cast<std::size_t>(totalSteps / stride + 2));
+        points.push_back(toScreen(world, static_cast<float>(state.x), static_cast<float>(state.y)));
+        for (int i = 0; i < totalSteps; ++i)
         {
-            const float phase = juce::MathConstants<float>::twoPi * static_cast<float>(i) / static_cast<float>(samples);
-            const float lx = radius * std::cos(phase);
-            const float ly = radius * aspect * std::sin(phase);
-            points.push_back(toScreen(world, co * lx - so * ly, so * lx + co * ly));
+            stepOrbit(state, dt);
+            if (i % stride == 0)
+                points.push_back(toScreen(world, static_cast<float>(state.x), static_cast<float>(state.y)));
         }
 
         const auto colour = juce::Colour(0xff78ddff);
         drawRoute(g, points, colour, true, 4);
-        drawLabel(g, world, "ORBIT", colour);
+        drawLabel(g, world, "ORBIT / BODY PATH", colour);
+    }
+
+    void stepLissajous(SimState& state, double& elapsed, double dt) const
+    {
+        const double a = std::clamp(plugin_.parameterValue(motion::ids::motionA), 0.0, 1.0);
+        const double b = std::clamp(plugin_.parameterValue(motion::ids::motionB), 0.0, 1.0);
+        const double c = std::clamp(plugin_.parameterValue(motion::ids::motionC), 0.0, 1.0);
+        const double d = std::clamp(plugin_.parameterValue(motion::ids::motionD), 0.0, 1.0);
+        const double rateHz = 0.08 + a * 1.35;
+        const double ratio = 1.0 + b * 2.5;
+        const double phase = c * juce::MathConstants<double>::twoPi;
+        const double rotation = (d - 0.5) * juce::MathConstants<double>::pi;
+        const double t = elapsed * juce::MathConstants<double>::twoPi * rateHz;
+        const double rawX = 0.76 * std::sin(t);
+        const double rawY = 0.76 * std::sin(t * ratio + phase);
+        const double co = std::cos(rotation);
+        const double so = std::sin(rotation);
+        const double targetX = co * rawX - so * rawY;
+        const double targetY = so * rawX + co * rawY;
+        constexpr double pull = 25.0;
+        constexpr double damping = 8.0;
+
+        state.vx += ((targetX - state.x) * pull - state.vx * damping) * dt;
+        state.vy += ((targetY - state.y) * pull - state.vy * damping) * dt;
+        state.x += state.vx * dt;
+        state.y += state.vy * dt;
+        contain(state, false, 0.0);
+        applyWorldDrag(state, dt);
+        elapsed += dt;
     }
 
     void paintLissajous(juce::Graphics& g, juce::Rectangle<float> world)
     {
-        const float ratio = 1.0f + static_cast<float>(plugin_.parameterValue(motion::ids::motionB)) * 2.5f;
-        const float phaseOffset = static_cast<float>(plugin_.parameterValue(motion::ids::motionC)) * juce::MathConstants<float>::twoPi;
-        const float rotation = (static_cast<float>(plugin_.parameterValue(motion::ids::motionD)) - 0.5f) * juce::MathConstants<float>::pi;
-        const float co = std::cos(rotation);
-        const float so = std::sin(rotation);
+        const double a = std::clamp(plugin_.parameterValue(motion::ids::motionA), 0.0, 1.0);
+        const double c = std::clamp(plugin_.parameterValue(motion::ids::motionC), 0.0, 1.0);
+        const double d = std::clamp(plugin_.parameterValue(motion::ids::motionD), 0.0, 1.0);
+        const double rateHz = 0.08 + a * 1.35;
+        const double phase = c * juce::MathConstants<double>::twoPi;
+        const double rotation = (d - 0.5) * juce::MathConstants<double>::pi;
+        const double co = std::cos(rotation);
+        const double so = std::sin(rotation);
 
+        SimState state;
+        const double initialRawY = 0.76 * std::sin(phase);
+        state.x = -so * initialRawY;
+        state.y = co * initialRawY;
+        double elapsed = 0.0;
+
+        constexpr double dt = 1.0 / 240.0;
+        const int warmupSteps = static_cast<int>(2.5 / dt);
+        for (int i = 0; i < warmupSteps; ++i)
+            stepLissajous(state, elapsed, dt);
+
+        const double previewSeconds = std::clamp(3.0 / std::max(0.08, rateHz), 3.0, 12.0);
+        const int totalSteps = std::max(360, static_cast<int>(previewSeconds / dt));
+        const int stride = std::max(1, totalSteps / 360);
         std::vector<juce::Point<float>> points;
-        constexpr int samples = 360;
-        points.reserve(samples + 1);
-        for (int i = 0; i <= samples; ++i)
+        points.reserve(static_cast<std::size_t>(totalSteps / stride + 2));
+        points.push_back(toScreen(world, static_cast<float>(state.x), static_cast<float>(state.y)));
+        for (int i = 0; i < totalSteps; ++i)
         {
-            const float t = juce::MathConstants<float>::twoPi * 3.0f * static_cast<float>(i) / static_cast<float>(samples);
-            const float rawX = 0.76f * std::sin(t);
-            const float rawY = 0.76f * std::sin(t * ratio + phaseOffset);
-            points.push_back(toScreen(world, co * rawX - so * rawY, so * rawX + co * rawY));
+            stepLissajous(state, elapsed, dt);
+            if (i % stride == 0)
+                points.push_back(toScreen(world, static_cast<float>(state.x), static_cast<float>(state.y)));
         }
 
         const auto colour = juce::Colour(0xffff79d4);
         drawRoute(g, points, colour, false, 6);
-        drawLabel(g, world, "LISSAJOUS", colour);
+        drawLabel(g, world, "LISSAJOUS / BODY PATH", colour);
     }
 
     void paintImpulse(juce::Graphics& g, juce::Rectangle<float> world)
@@ -359,13 +491,6 @@ private:
         const auto colour = juce::Colour(0xffffcf73);
         drawRoute(g, points, colour, false, 5);
 
-        const auto center = toScreen(world, 0.0f, 0.0f);
-        g.setColour(colour.withAlpha(0.94f));
-        g.fillEllipse(center.x - 4.0f, center.y - 4.0f, 8.0f, 8.0f);
-        g.setFont(juce::FontOptions(10.0f, juce::Font::bold));
-        g.drawText("HIT", static_cast<int>(center.x + 7.0f), static_cast<int>(center.y - 9.0f), 30, 18,
-                   juce::Justification::centredLeft, false);
-
         for (std::size_t i = 0; i < turns.size(); ++i)
         {
             const float radius = std::max(3.0f, 6.0f - static_cast<float>(i) * 0.65f);
@@ -379,35 +504,32 @@ private:
         drawLabel(g, world, "IMPULSE / DECAYING REVERSALS", colour);
     }
 
-    void paintDecay(juce::Graphics& g, juce::Rectangle<float> world)
+    void paintLiveBody(juce::Graphics& g, juce::Rectangle<float> world) const
     {
-        const double initial = std::clamp(plugin_.parameterValue(motion::ids::motionA), 0.0, 1.0);
-        const double decayControl = std::clamp(plugin_.parameterValue(motion::ids::motionB), 0.0, 1.0);
-        const double rateControl = std::clamp(plugin_.parameterValue(motion::ids::motionC), 0.0, 1.0);
-        const double wobble = std::clamp(plugin_.parameterValue(motion::ids::motionD), 0.0, 1.0) * 0.38;
-        const double energy = std::clamp(plugin_.parameterValue(motion::ids::energy), 0.0, 2.5);
-        const double amplitude0 = std::clamp((0.24 + 0.72 * initial) * (0.65 + 0.35 * energy), 0.08, 0.98);
-        const double decay = 0.18 + decayControl * 4.2;
-        const double rateHz = 0.12 + rateControl * 1.45;
+        const auto snapshot = plugin_.motionCore().getSnapshot();
+        const auto p = project(snapshot.x, snapshot.y);
+        const juce::Point<float> body {
+            juce::jmap(p.x, -1.0f, 1.0f, world.getX(), world.getRight()),
+            juce::jmap(p.y, -1.0f, 1.0f, world.getBottom(), world.getY())
+        };
+        const auto velocityEnd = body + juce::Point<float>(snapshot.vx, -snapshot.vy) * 18.0f;
+        const auto warm = juce::Colour(0xffffcf73);
+        const auto accent = juce::Colour(0xff78ddff);
+        const auto accent2 = juce::Colour(0xffff79d4);
+        const auto text = juce::Colour(0xffedf4ff);
 
-        std::vector<juce::Point<float>> points;
-        constexpr int samples = 300;
-        constexpr double duration = 3.0;
-        points.reserve(samples + 1);
-        for (int i = 0; i <= samples; ++i)
-        {
-            const double time = duration * static_cast<double>(i) / static_cast<double>(samples);
-            const double phase = juce::MathConstants<double>::twoPi * rateHz * time;
-            const double amplitude = amplitude0 * std::exp(-decay * time);
-            const double x = amplitude * (std::cos(phase) + wobble * 0.18 * std::cos(phase * 3.0));
-            const double y = amplitude * ((1.0 - wobble * 0.45) * std::sin(phase)
-                                        + wobble * 0.16 * std::sin(phase * 2.0));
-            points.push_back(toScreen(world, static_cast<float>(x), static_cast<float>(y)));
-        }
+        g.setColour(warm.withAlpha(0.68f));
+        g.drawLine(body.x, body.y, velocityEnd.x, velocityEnd.y, 1.5f);
 
-        const auto colour = juce::Colour(0xffb99cff);
-        drawRoute(g, points, colour, false, 5);
-        drawLabel(g, world, "DECAY", colour);
+        const auto bodyAccent = accent.interpolatedWith(accent2, std::clamp(snapshot.impact, 0.0f, 1.0f));
+        const float bodyRadius = 10.0f + snapshot.energy * 4.0f;
+        g.setColour(bodyAccent.withAlpha(0.13f + snapshot.impact * 0.16f));
+        g.fillEllipse({ body.x - bodyRadius - 8.0f, body.y - bodyRadius - 8.0f,
+                        (bodyRadius + 8.0f) * 2.0f, (bodyRadius + 8.0f) * 2.0f });
+        g.setColour(text);
+        g.fillEllipse({ body.x - bodyRadius, body.y - bodyRadius, bodyRadius * 2.0f, bodyRadius * 2.0f });
+        g.setColour(bodyAccent);
+        g.drawEllipse({ body.x - bodyRadius, body.y - bodyRadius, bodyRadius * 2.0f, bodyRadius * 2.0f }, 2.0f);
     }
 
     juce::Component& parent_;
