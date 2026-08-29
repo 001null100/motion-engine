@@ -1,6 +1,8 @@
 #include "MotionEngineCore.h"
+#include "MotionPaths.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <string>
@@ -25,8 +27,9 @@ bool validate(const motion::MotionEngineCore::Snapshot& snapshot, int model, int
         return false;
     };
 
-    if (!finite(snapshot.x) || !finite(snapshot.y) || !finite(snapshot.vx) || !finite(snapshot.vy))
-        return fail("non-finite position or velocity");
+    if (!finite(snapshot.x) || !finite(snapshot.y) || !finite(snapshot.vx) || !finite(snapshot.vy)
+        || !finite(snapshot.trajectoryPhase))
+        return fail("non-finite position, velocity or trajectory phase");
     if (snapshot.x < -1.001f || snapshot.x > 1.001f || snapshot.y < -1.001f || snapshot.y > 1.001f)
         return fail("body escaped the world bounds");
 
@@ -116,8 +119,7 @@ int main()
         }
     }
 
-    // Constraints are output projections and must stay exact for every model,
-    // including analytic path generators such as Orbit and Lissajous.
+    // Constraints are output projections and must stay exact for every model.
     for (int model = 0; model < 10; ++model)
     {
         for (int constraint = 1; constraint <= 4; ++constraint)
@@ -170,8 +172,70 @@ int main()
         }
     }
 
-    // Lissajous should traverse meaningfully in both axes instead of collapsing to
-    // a tiny center orbit or becoming another force-field model.
+    // Orbit Speed is temporal only: low and high speeds must stay on precisely the
+    // same ellipse instead of changing radius or turning into a speed-dependent loop.
+    for (const double speedControl : { 0.0, 1.0 })
+    {
+        motion::Parameters parameters;
+        parameters.model = 0;
+        parameters.motion = { 0.58, 0.86, 0.37, speedControl };
+        parameters.globalDamping = 1.8; // deterministic Orbit must ignore global forces
+        parameters.audioKick = 2.0;
+        core.setParameters(parameters);
+        core.requestReset();
+
+        const double radius = motion::paths::orbitRadius(parameters.motion[0]);
+        const double aspect = motion::paths::orbitAspect(parameters.motion[1]);
+        const double rotation = parameters.motion[2] * motion::paths::kPi;
+        const double co = std::cos(rotation);
+        const double so = std::sin(rotation);
+
+        for (int step = 0; step < 1800; ++step)
+        {
+            core.process(1.0 / 240.0, {});
+            const auto snapshot = core.getSnapshot();
+            const double localX = co * snapshot.x + so * snapshot.y;
+            const double localY = -so * snapshot.x + co * snapshot.y;
+            const double ellipse = std::sqrt((localX * localX) / (radius * radius)
+                                           + (localY * localY) / (radius * radius * aspect * aspect));
+            if (std::abs(ellipse - 1.0) > 2.0e-4)
+            {
+                std::cerr << "orbit left exact ellipse at speed control " << speedControl
+                          << ", step " << step << ", error " << std::abs(ellipse - 1.0) << '\n';
+                return 1;
+            }
+        }
+    }
+
+    // Lissajous body and preview share MotionPaths. Verify the published body sits
+    // exactly on that shared route at low, medium and high rates, including Rate=0.
+    for (const double rateControl : { 0.0, 0.42, 1.0 })
+    {
+        motion::Parameters parameters;
+        parameters.model = 6;
+        parameters.motion = { rateControl, 0.48, 0.17, 0.61 };
+        parameters.globalDamping = 2.0;
+        parameters.audioKick = 2.0;
+        core.setParameters(parameters);
+        core.requestReset();
+
+        for (int step = 0; step < 1800; ++step)
+        {
+            core.process(1.0 / 240.0, {});
+            const auto snapshot = core.getSnapshot();
+            const auto expected = motion::paths::lissajousPoint(parameters.motion[1], parameters.motion[2],
+                                                                parameters.motion[3], snapshot.trajectoryPhase);
+            if (std::abs(static_cast<double>(snapshot.x) - expected.x) > 2.0e-4
+                || std::abs(static_cast<double>(snapshot.y) - expected.y) > 2.0e-4)
+            {
+                std::cerr << "lissajous body diverged from shared route at rate control " << rateControl
+                          << ", step " << step << '\n';
+                return 1;
+            }
+        }
+    }
+
+    // Lissajous should traverse meaningfully in both axes instead of collapsing.
     {
         motion::Parameters parameters;
         parameters.model = 6;
@@ -199,8 +263,7 @@ int main()
         }
     }
 
-    // Impulse should start energetic on HIT and audibly/usefully settle rather than
-    // behaving as a perpetual projectile or another center vortex.
+    // Impulse should start energetic on HIT and usefully settle.
     {
         motion::Parameters parameters;
         parameters.model = 7;
