@@ -4,10 +4,40 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <algorithm>
 #include <array>
 #include <functional>
 #include <memory>
 #include <vector>
+
+class StableComboBox final : public juce::ComboBox
+{
+public:
+    void armSyncHold(double milliseconds = 450.0) noexcept
+    {
+        syncHoldUntilMs_ = std::max(syncHoldUntilMs_, juce::Time::getMillisecondCounterHiRes() + milliseconds);
+    }
+
+    bool canAcceptExternalSync() const noexcept
+    {
+        return !isPopupActive() && juce::Time::getMillisecondCounterHiRes() >= syncHoldUntilMs_;
+    }
+
+    void mouseDown(const juce::MouseEvent& event) override
+    {
+        armSyncHold();
+        juce::ComboBox::mouseDown(event);
+    }
+
+    void mouseUp(const juce::MouseEvent& event) override
+    {
+        armSyncHold();
+        juce::ComboBox::mouseUp(event);
+    }
+
+private:
+    double syncHoldUntilMs_ = 0.0;
+};
 
 class MotionCanvas final : public juce::Component
 {
@@ -65,10 +95,10 @@ private:
     float currentValue_ = 0.5f;
 
     juce::Label indexLabel_;
-    juce::ComboBox sourceBox_;
+    StableComboBox sourceBox_;
     juce::Slider minSlider_;
     juce::Slider maxSlider_;
-    juce::ComboBox curveBox_;
+    StableComboBox curveBox_;
     juce::Slider smoothSlider_;
     juce::TextButton mapButton_ { "MAP" };
     juce::TextButton clearButton_ { "X" };
@@ -102,12 +132,14 @@ private:
     int displayedModel_ = -1;
 
     juce::Label titleLabel_;
+    juce::Label betaLabel_;
     juce::Label subtitleLabel_;
+    juce::Label modelInfoLabel_;
     juce::Label bridgeLabel_;
     juce::Label outputsTitleLabel_;
 
-    juce::ComboBox modelBox_;
-    juce::ComboBox constraintBox_;
+    StableComboBox modelBox_;
+    StableComboBox constraintBox_;
     juce::TextButton hitButton_ { "HIT" };
     juce::TextButton resetButton_ { "RESET" };
 
@@ -123,7 +155,7 @@ private:
     std::array<juce::Slider, 4> motionSliders_;
     std::array<juce::Label, 4> motionLabels_;
 
-    juce::ComboBox zoneBox_;
+    StableComboBox zoneBox_;
     juce::Slider zoneRadiusSlider_;
     juce::Slider zoneFalloffSlider_;
     juce::Label zoneLabel_;

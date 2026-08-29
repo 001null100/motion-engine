@@ -5,13 +5,16 @@
 
 namespace
 {
-const auto bg = juce::Colour(0xff0d1016);
-const auto panel = juce::Colour(0xff151a23);
-const auto panelRaised = juce::Colour(0xff1c2330);
-const auto text = juce::Colour(0xffedf3ff);
-const auto muted = juce::Colour(0xff8f9bad);
-const auto accent = juce::Colour(0xff7de2ff);
-const auto accent2 = juce::Colour(0xffff7edb);
+const auto bg = juce::Colour(0xff0b0f15);
+const auto bgRaised = juce::Colour(0xff101621);
+const auto panel = juce::Colour(0xff151c27);
+const auto panelRaised = juce::Colour(0xff1b2432);
+const auto panelEdge = juce::Colour(0xff2d394a);
+const auto text = juce::Colour(0xffedf4ff);
+const auto muted = juce::Colour(0xff91a0b5);
+const auto accent = juce::Colour(0xff78ddff);
+const auto accent2 = juce::Colour(0xffff79d4);
+const auto warm = juce::Colour(0xffffcf73);
 
 juce::String toJuce(std::string_view value)
 {
@@ -35,6 +38,24 @@ juce::Colour zoneColour(int index)
 float distance(juce::Point<float> a, juce::Point<float> b)
 {
     return a.getDistanceFrom(b);
+}
+
+void styleCombo(juce::ComboBox& box)
+{
+    box.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff111925));
+    box.setColour(juce::ComboBox::textColourId, text);
+    box.setColour(juce::ComboBox::outlineColourId, panelEdge);
+    box.setColour(juce::ComboBox::arrowColourId, accent.withAlpha(0.9f));
+    box.setColour(juce::ComboBox::focusedOutlineColourId, accent.withAlpha(0.75f));
+    box.setJustificationType(juce::Justification::centredLeft);
+}
+
+void styleButton(juce::TextButton& button, juce::Colour colour)
+{
+    button.setColour(juce::TextButton::buttonColourId, colour.withAlpha(0.16f));
+    button.setColour(juce::TextButton::buttonOnColourId, colour.withAlpha(0.32f));
+    button.setColour(juce::TextButton::textColourOffId, text);
+    button.setColour(juce::TextButton::textColourOnId, text);
 }
 } // namespace
 
@@ -78,15 +99,19 @@ void MotionCanvas::paint(juce::Graphics& g)
     const auto area = getLocalBounds().toFloat();
     g.setColour(panel);
     g.fillRoundedRectangle(area, 12.0f);
+    g.setColour(panelEdge.withAlpha(0.72f));
+    g.drawRoundedRectangle(area.reduced(0.5f), 12.0f, 1.0f);
 
     const auto world = worldBounds();
-    g.setColour(juce::Colour(0xff10151d));
+    juce::ColourGradient worldGradient(juce::Colour(0xff111925), world.getX(), world.getY(),
+                                       juce::Colour(0xff0c1119), world.getRight(), world.getBottom(), false);
+    g.setGradientFill(worldGradient);
     g.fillRoundedRectangle(world, 9.0f);
 
     g.saveState();
     g.reduceClipRegion(world.toNearestInt());
 
-    g.setColour(juce::Colour(0xff202836));
+    g.setColour(juce::Colour(0xff202b39));
     for (int i = 1; i < 8; ++i)
     {
         const float t = static_cast<float>(i) / 8.0f;
@@ -94,10 +119,32 @@ void MotionCanvas::paint(juce::Graphics& g)
         g.drawHorizontalLine(static_cast<int>(world.getY() + world.getHeight() * t), world.getX(), world.getRight());
     }
 
-    g.setColour(juce::Colour(0xff354052));
     const auto centre = worldToScreen(0.0f, 0.0f);
-    g.drawLine(centre.x, world.getY(), centre.x, world.getBottom(), 1.4f);
-    g.drawLine(world.getX(), centre.y, world.getRight(), centre.y, 1.4f);
+    g.setColour(juce::Colour(0xff3a485c).withAlpha(0.72f));
+    g.drawLine(centre.x, world.getY(), centre.x, world.getBottom(), 1.2f);
+    g.drawLine(world.getX(), centre.y, world.getRight(), centre.y, 1.2f);
+
+    const int constraint = plugin_.parameterInt(motion::ids::constraint);
+    g.setColour(accent.withAlpha(0.25f));
+    if (constraint == 1)
+    {
+        g.drawLine(world.getX(), centre.y, world.getRight(), centre.y, 2.2f);
+    }
+    else if (constraint == 2)
+    {
+        g.drawLine(centre.x, world.getY(), centre.x, world.getBottom(), 2.2f);
+    }
+    else if (constraint == 3)
+    {
+        const auto a = worldToScreen(-1.0f, -1.0f);
+        const auto b = worldToScreen(1.0f, 1.0f);
+        g.drawLine(a.x, a.y, b.x, b.y, 2.2f);
+    }
+    else if (constraint == 4)
+    {
+        const float r = worldRadiusToPixels(0.72f);
+        g.drawEllipse({ centre.x - r, centre.y - r, r * 2.0f, r * 2.0f }, 2.2f);
+    }
 
     const auto snapshot = plugin_.motionCore().getSnapshot();
     const int model = plugin_.parameterInt(motion::ids::model);
@@ -119,8 +166,36 @@ void MotionCanvas::paint(juce::Graphics& g)
             const auto point = worldToScreen(co * localX - so * localY, so * localX + co * localY);
             if (i == 0) orbitGuide.startNewSubPath(point); else orbitGuide.lineTo(point);
         }
-        g.setColour(accent.withAlpha(0.18f));
-        g.strokePath(orbitGuide, juce::PathStrokeType(1.15f));
+        g.setColour(accent.withAlpha(0.20f));
+        g.strokePath(orbitGuide, juce::PathStrokeType(1.25f));
+    }
+    else if (model == 6)
+    {
+        const float ratio = 1.0f + static_cast<float>(plugin_.parameterValue(motion::ids::motionB)) * 2.5f;
+        const float phaseOffset = static_cast<float>(plugin_.parameterValue(motion::ids::motionC)) * juce::MathConstants<float>::twoPi;
+        const float rotation = (static_cast<float>(plugin_.parameterValue(motion::ids::motionD)) - 0.5f) * juce::MathConstants<float>::pi;
+        const float co = std::cos(rotation);
+        const float so = std::sin(rotation);
+        juce::Path guide;
+        constexpr int samples = 180;
+        for (int i = 0; i <= samples; ++i)
+        {
+            const float t = juce::MathConstants<float>::twoPi * 2.0f * static_cast<float>(i) / static_cast<float>(samples);
+            const float rawX = 0.76f * std::sin(t);
+            const float rawY = 0.76f * std::sin(t * ratio + phaseOffset);
+            const auto point = worldToScreen(co * rawX - so * rawY, so * rawX + co * rawY);
+            if (i == 0) guide.startNewSubPath(point); else guide.lineTo(point);
+        }
+        g.setColour(accent2.withAlpha(0.16f));
+        g.strokePath(guide, juce::PathStrokeType(1.15f));
+    }
+    else if (model == 7)
+    {
+        const float direction = static_cast<float>(plugin_.parameterValue(motion::ids::motionD)) * juce::MathConstants<float>::twoPi;
+        const auto endpoint = worldToScreen(std::cos(direction) * 0.78f, std::sin(direction) * 0.78f);
+        g.setColour(warm.withAlpha(0.28f));
+        g.drawLine(centre.x, centre.y, endpoint.x, endpoint.y, 1.5f);
+        g.fillEllipse({ endpoint.x - 3.0f, endpoint.y - 3.0f, 6.0f, 6.0f });
     }
 
     for (int zone = 0; zone < motion::kNumZones; ++zone)
@@ -136,7 +211,7 @@ void MotionCanvas::paint(juce::Graphics& g)
         const auto colour = zoneColour(zone);
         const float amount = snapshot.zones[static_cast<std::size_t>(zone)];
 
-        g.setColour(colour.withAlpha(0.045f + amount * 0.13f));
+        g.setColour(colour.withAlpha(0.035f + amount * 0.14f));
         g.fillEllipse(ellipse);
         constexpr std::array<float, 3> responseLevels { 0.75f, 0.50f, 0.25f };
         for (std::size_t level = 0; level < responseLevels.size(); ++level)
@@ -144,12 +219,12 @@ void MotionCanvas::paint(juce::Graphics& g)
             const float ratio = 1.0f - std::pow(responseLevels[level], 1.0f / falloff);
             const float ringRadius = pixels * ratio;
             const auto ring = juce::Rectangle<float>(center.x - ringRadius, center.y - ringRadius, ringRadius * 2.0f, ringRadius * 2.0f);
-            g.setColour(colour.withAlpha(0.16f + static_cast<float>(level) * 0.035f));
+            g.setColour(colour.withAlpha(0.13f + static_cast<float>(level) * 0.035f));
             g.drawEllipse(ring, 1.0f);
         }
-        g.setColour(colour.withAlpha(zone == selectedZone_ ? 0.95f : 0.46f));
+        g.setColour(colour.withAlpha(zone == selectedZone_ ? 0.95f : 0.42f));
         g.drawEllipse(ellipse, zone == selectedZone_ ? 2.0f : 1.0f);
-        g.fillEllipse(juce::Rectangle<float>(center.x - 4.0f, center.y - 4.0f, 8.0f, 8.0f));
+        g.fillEllipse({ center.x - 4.0f, center.y - 4.0f, 8.0f, 8.0f });
         g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
         g.drawText("Z" + juce::String(zone + 1), static_cast<int>(center.x + 8.0f), static_cast<int>(center.y - 18.0f), 30, 18,
                    juce::Justification::centredLeft);
@@ -162,7 +237,7 @@ void MotionCanvas::paint(juce::Graphics& g)
         const auto body = worldToScreen(snapshot.x, snapshot.y);
         g.setColour(accent.withAlpha(0.42f));
         g.drawLine(anchor.x, anchor.y, body.x, body.y, 1.5f);
-        g.drawEllipse(juce::Rectangle<float>(anchor.x - 5.0f, anchor.y - 5.0f, 10.0f, 10.0f), 1.5f);
+        g.drawEllipse({ anchor.x - 5.0f, anchor.y - 5.0f, 10.0f, 10.0f }, 1.5f);
     }
     else if (model == 2)
     {
@@ -170,12 +245,7 @@ void MotionCanvas::paint(juce::Graphics& g)
         const auto body = worldToScreen(snapshot.x, snapshot.y);
         g.setColour(accent.withAlpha(0.45f));
         g.drawLine(pivot.x, pivot.y, body.x, body.y, 1.7f);
-        g.fillEllipse(juce::Rectangle<float>(pivot.x - 4.0f, pivot.y - 4.0f, 8.0f, 8.0f));
-    }
-    else if (model == 0 || model == 6)
-    {
-        g.setColour((model == 6 ? accent2 : accent).withAlpha(0.6f));
-        g.drawEllipse(juce::Rectangle<float>(centre.x - 7.0f, centre.y - 7.0f, 14.0f, 14.0f), 1.5f);
+        g.fillEllipse({ pivot.x - 4.0f, pivot.y - 4.0f, 8.0f, 8.0f });
     }
 
     if (trail_.size() > 1)
@@ -183,34 +253,37 @@ void MotionCanvas::paint(juce::Graphics& g)
         for (std::size_t i = 1; i < trail_.size(); ++i)
         {
             const float t = static_cast<float>(i) / static_cast<float>(trail_.size() - 1);
-            g.setColour(accent.withAlpha(0.035f + 0.72f * t * t));
-            g.drawLine(trail_[i - 1].x, trail_[i - 1].y, trail_[i].x, trail_[i].y, 0.8f + 2.0f * t);
+            g.setColour(accent.withAlpha(0.025f + 0.62f * t * t));
+            g.drawLine(trail_[i - 1].x, trail_[i - 1].y, trail_[i].x, trail_[i].y, 0.8f + 1.8f * t);
         }
     }
 
     const auto body = worldToScreen(snapshot.x, snapshot.y);
     const auto velocityEnd = body + juce::Point<float>(snapshot.vx, -snapshot.vy) * 18.0f;
-    g.setColour(juce::Colour(0xffffcf73).withAlpha(0.72f));
-    g.drawLine(body.x, body.y, velocityEnd.x, velocityEnd.y, 1.6f);
+    g.setColour(warm.withAlpha(0.68f));
+    g.drawLine(body.x, body.y, velocityEnd.x, velocityEnd.y, 1.5f);
 
+    const auto bodyAccent = accent.interpolatedWith(accent2, std::clamp(snapshot.impact, 0.0f, 1.0f));
     const float bodyRadius = 10.0f + snapshot.energy * 4.0f;
-    g.setColour(accent.withAlpha(0.18f));
-    g.fillEllipse(juce::Rectangle<float>(body.x - bodyRadius - 6.0f, body.y - bodyRadius - 6.0f,
-                                         (bodyRadius + 6.0f) * 2.0f, (bodyRadius + 6.0f) * 2.0f));
+    g.setColour(bodyAccent.withAlpha(0.13f + snapshot.impact * 0.16f));
+    g.fillEllipse({ body.x - bodyRadius - 8.0f, body.y - bodyRadius - 8.0f,
+                    (bodyRadius + 8.0f) * 2.0f, (bodyRadius + 8.0f) * 2.0f });
     g.setColour(text);
-    g.fillEllipse(juce::Rectangle<float>(body.x - bodyRadius, body.y - bodyRadius, bodyRadius * 2.0f, bodyRadius * 2.0f));
-    g.setColour(accent);
-    g.drawEllipse(juce::Rectangle<float>(body.x - bodyRadius, body.y - bodyRadius, bodyRadius * 2.0f, bodyRadius * 2.0f), 2.0f);
+    g.fillEllipse({ body.x - bodyRadius, body.y - bodyRadius, bodyRadius * 2.0f, bodyRadius * 2.0f });
+    g.setColour(bodyAccent);
+    g.drawEllipse({ body.x - bodyRadius, body.y - bodyRadius, bodyRadius * 2.0f, bodyRadius * 2.0f }, 2.0f);
 
     g.restoreState();
-    g.setColour(juce::Colour(0xff46536a));
+    g.setColour(panelEdge);
     g.drawRoundedRectangle(world, 9.0f, 1.2f);
 
     auto help = getLocalBounds().reduced(18).removeFromBottom(18);
     g.setColour(muted);
     g.setFont(juce::FontOptions(11.5f));
-    g.drawText("Drag body: throw | Drag Zone center: move | Drag Zone ring: radius | Double-click: HIT",
-               help, juce::Justification::centredLeft);
+    const juce::String hint = (model == 7 || model == 8)
+        ? "Drag body: throw | Zones: drag center/ring | Double-click or HIT: retrigger model"
+        : "Drag body: throw | Zones: drag center/ring | Double-click: HIT";
+    g.drawText(hint, help, juce::Justification::centredLeft);
 }
 
 void MotionCanvas::tick()
@@ -219,7 +292,7 @@ void MotionCanvas::tick()
     const auto point = worldToScreen(snapshot.x, snapshot.y);
     if (trail_.empty() || trail_.back().getDistanceFrom(point) > 0.75f)
         trail_.push_back(point);
-    constexpr std::size_t maxTrailPoints = 28;
+    constexpr std::size_t maxTrailPoints = 36;
     if (trail_.size() > maxTrailPoints)
         trail_.erase(trail_.begin(), trail_.begin() + static_cast<std::ptrdiff_t>(trail_.size() - maxTrailPoints));
     repaint();
@@ -358,6 +431,11 @@ OutputStrip::OutputStrip(MotionEnginePlugin& plugin, int index) : plugin_(plugin
     indexLabel_.setColour(juce::Label::textColourId, accent);
     indexLabel_.setJustificationType(juce::Justification::centred);
 
+    styleCombo(sourceBox_);
+    styleCombo(curveBox_);
+    styleButton(mapButton_, accent);
+    styleButton(clearButton_, accent2);
+
     int item = 1;
     for (const auto name : motion::MotionEngineCore::sourceNames())
         sourceBox_.addItem(toJuce(name), item++);
@@ -396,11 +474,13 @@ OutputStrip::OutputStrip(MotionEnginePlugin& plugin, int index) : plugin_(plugin
     const auto& id = motion::ids::outputs[static_cast<std::size_t>(index_)];
     sourceBox_.onChange = [this, source = id.source]
     {
+        sourceBox_.armSyncHold();
         if (!syncing_ && sourceBox_.getSelectedId() > 0)
             setOneShot(source, sourceBox_.getSelectedItemIndex());
     };
     curveBox_.onChange = [this, curve = id.curve]
     {
+        curveBox_.armSyncHold();
         if (!syncing_ && curveBox_.getSelectedId() > 0)
             setOneShot(curve, curveBox_.getSelectedItemIndex());
     };
@@ -445,7 +525,7 @@ void OutputStrip::paint(juce::Graphics& g)
     const auto bounds = getLocalBounds().toFloat();
     g.setColour(panelRaised);
     g.fillRoundedRectangle(bounds, 7.0f);
-    g.setColour(juce::Colour(0xff2a3444));
+    g.setColour(panelEdge.withAlpha(0.82f));
     g.drawRoundedRectangle(bounds.reduced(0.5f), 7.0f, 1.0f);
 
     const auto meter = juce::Rectangle<float>(2.0f, 5.0f, 4.0f, bounds.getHeight() - 10.0f);
@@ -478,14 +558,14 @@ void OutputStrip::sync(const motion::MotionEngineCore::Snapshot& snapshot, const
     syncing_ = true;
 
     const int sourceIndex = plugin_.parameterInt(id.source);
-    if (!sourceBox_.isPopupActive() && sourceBox_.getSelectedItemIndex() != sourceIndex)
+    if (sourceBox_.canAcceptExternalSync() && sourceBox_.getSelectedItemIndex() != sourceIndex)
         sourceBox_.setSelectedItemIndex(sourceIndex, juce::dontSendNotification);
 
     minSlider_.setValue(plugin_.parameterValue(id.minimum), juce::dontSendNotification);
     maxSlider_.setValue(plugin_.parameterValue(id.maximum), juce::dontSendNotification);
 
     const int curveIndex = plugin_.parameterInt(id.curve);
-    if (!curveBox_.isPopupActive() && curveBox_.getSelectedItemIndex() != curveIndex)
+    if (curveBox_.canAcceptExternalSync() && curveBox_.getSelectedItemIndex() != curveIndex)
         curveBox_.setSelectedItemIndex(curveIndex, juce::dontSendNotification);
 
     smoothSlider_.setValue(plugin_.parameterValue(id.smoothing), juce::dontSendNotification);
@@ -495,20 +575,23 @@ void OutputStrip::sync(const motion::MotionEngineCore::Snapshot& snapshot, const
     if (status.armed)
     {
         targetLabel_.setText("move target parameter...", juce::dontSendNotification);
-        targetLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffffcf73));
+        targetLabel_.setColour(juce::Label::textColourId, warm);
         mapButton_.setButtonText("ARMED");
+        mapButton_.setColour(juce::TextButton::buttonColourId, warm.withAlpha(0.28f));
     }
     else if (status.mapped)
     {
         targetLabel_.setText(toJuce(status.targetName), juce::dontSendNotification);
         targetLabel_.setColour(juce::Label::textColourId, text);
         mapButton_.setButtonText("MAP");
+        mapButton_.setColour(juce::TextButton::buttonColourId, accent.withAlpha(0.28f));
     }
     else
     {
         targetLabel_.setText("unmapped | aux: Motion " + juce::String(index_ + 1), juce::dontSendNotification);
         targetLabel_.setColour(juce::Label::textColourId, muted);
         mapButton_.setButtonText("MAP");
+        mapButton_.setColour(juce::TextButton::buttonColourId, accent.withAlpha(0.12f));
     }
     repaint();
 }
@@ -523,15 +606,36 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
     titleLabel_.setText("MOTION ENGINE", juce::dontSendNotification);
     titleLabel_.setFont(juce::FontOptions(24.0f, juce::Font::bold));
     titleLabel_.setColour(juce::Label::textColourId, text);
+
+    betaLabel_.setText("BETA", juce::dontSendNotification);
+    betaLabel_.setFont(juce::FontOptions(10.5f, juce::Font::bold));
+    betaLabel_.setJustificationType(juce::Justification::centred);
+    betaLabel_.setColour(juce::Label::textColourId, accent);
+    betaLabel_.setColour(juce::Label::backgroundColourId, accent.withAlpha(0.11f));
+    betaLabel_.setColour(juce::Label::outlineColourId, accent.withAlpha(0.35f));
+
     subtitleLabel_.setText("physics-driven modulation", juce::dontSendNotification);
     subtitleLabel_.setFont(juce::FontOptions(13.0f));
     subtitleLabel_.setColour(juce::Label::textColourId, muted);
+
+    modelInfoLabel_.setFont(juce::FontOptions(11.5f));
+    modelInfoLabel_.setColour(juce::Label::textColourId, muted.brighter(0.12f));
+    modelInfoLabel_.setJustificationType(juce::Justification::centredRight);
+    modelInfoLabel_.setMinimumHorizontalScale(0.72f);
+
     outputsTitleLabel_.setText("MOTION OUTPUTS", juce::dontSendNotification);
     outputsTitleLabel_.setFont(juce::FontOptions(14.0f, juce::Font::bold));
     outputsTitleLabel_.setColour(juce::Label::textColourId, text);
+
     bridgeLabel_.setFont(juce::FontOptions(11.5f));
     bridgeLabel_.setColour(juce::Label::textColourId, muted);
     bridgeLabel_.setMinimumHorizontalScale(0.72f);
+
+    styleCombo(modelBox_);
+    styleCombo(constraintBox_);
+    styleCombo(zoneBox_);
+    styleButton(hitButton_, accent2);
+    styleButton(resetButton_, accent);
 
     int item = 1;
     for (const auto name : motion::MotionEngineCore::modelNames())
@@ -542,7 +646,8 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
     for (int zone = 0; zone < motion::kNumZones; ++zone)
         zoneBox_.addItem("Zone " + juce::String(zone + 1), zone + 1);
 
-    for (auto* component : { static_cast<juce::Component*>(&titleLabel_), static_cast<juce::Component*>(&subtitleLabel_),
+    for (auto* component : { static_cast<juce::Component*>(&titleLabel_), static_cast<juce::Component*>(&betaLabel_),
+                             static_cast<juce::Component*>(&subtitleLabel_), static_cast<juce::Component*>(&modelInfoLabel_),
                              static_cast<juce::Component*>(&outputsTitleLabel_), static_cast<juce::Component*>(&bridgeLabel_),
                              static_cast<juce::Component*>(&modelBox_), static_cast<juce::Component*>(&constraintBox_),
                              static_cast<juce::Component*>(&hitButton_), static_cast<juce::Component*>(&resetButton_),
@@ -595,6 +700,7 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
 
     modelBox_.onChange = [this]
     {
+        modelBox_.armSyncHold();
         if (!syncing_ && modelBox_.getSelectedId() > 0)
         {
             setOneShot(motion::ids::model, modelBox_.getSelectedItemIndex());
@@ -603,11 +709,13 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
     };
     constraintBox_.onChange = [this]
     {
+        constraintBox_.armSyncHold();
         if (!syncing_ && constraintBox_.getSelectedId() > 0)
             setOneShot(motion::ids::constraint, constraintBox_.getSelectedItemIndex());
     };
     zoneBox_.onChange = [this]
     {
+        zoneBox_.armSyncHold();
         if (!syncing_ && zoneBox_.getSelectedId() > 0)
             selectZone(zoneBox_.getSelectedItemIndex());
     };
@@ -646,6 +754,7 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
         selectZone(zone);
         syncing_ = true;
         zoneBox_.setSelectedItemIndex(zone, juce::dontSendNotification);
+        zoneBox_.armSyncHold(120.0);
         syncing_ = false;
     };
 
@@ -672,9 +781,11 @@ void MotionEngineEditor::configureSlider(juce::Slider& slider, const juce::Strin
     slider.setSliderStyle(juce::Slider::LinearHorizontal);
     slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 20);
     slider.setTextValueSuffix(suffix);
-    slider.setColour(juce::Slider::trackColourId, accent.withAlpha(0.5f));
+    slider.setColour(juce::Slider::backgroundColourId, juce::Colour(0xff111823));
+    slider.setColour(juce::Slider::trackColourId, accent.withAlpha(0.48f));
     slider.setColour(juce::Slider::thumbColourId, text);
     slider.setColour(juce::Slider::textBoxTextColourId, text);
+    slider.setColour(juce::Slider::textBoxBackgroundColourId, juce::Colour(0xff111823));
     slider.setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
 }
 
@@ -706,26 +817,42 @@ void MotionEngineEditor::setOneShot(clap_id id, double value)
 
 void MotionEngineEditor::paint(juce::Graphics& g)
 {
-    g.fillAll(bg);
-    auto content = getLocalBounds().toFloat().reduced(10.0f);
-    auto right = content.removeFromRight(465.0f);
-    g.setColour(panel);
+    juce::ColourGradient background(bgRaised, 0.0f, 0.0f, bg, 0.0f, static_cast<float>(getHeight()), false);
+    g.setGradientFill(background);
+    g.fillRect(getLocalBounds());
+
+    auto layout = getLocalBounds().toFloat().reduced(10.0f);
+    auto right = layout.removeFromRight(465.0f);
+    auto left = layout;
+
+    g.setColour(panel.withAlpha(0.94f));
     g.fillRoundedRectangle(right, 12.0f);
+    g.setColour(panelEdge.withAlpha(0.8f));
+    g.drawRoundedRectangle(right.reduced(0.5f), 12.0f, 1.0f);
+
+    left.removeFromTop(50.0f);
+    auto controls = left.removeFromTop(182.0f);
+    g.setColour(panel.withAlpha(0.72f));
+    g.fillRoundedRectangle(controls, 10.0f);
+    g.setColour(panelEdge.withAlpha(0.55f));
+    g.drawRoundedRectangle(controls.reduced(0.5f), 10.0f, 1.0f);
 }
 
 void MotionEngineEditor::resized()
 {
     auto area = getLocalBounds().reduced(14);
-    auto header = area.removeFromTop(46);
-    titleLabel_.setBounds(header.removeFromLeft(210));
-    subtitleLabel_.setBounds(header.removeFromLeft(250).withTrimmedTop(5));
+    auto header = area.removeFromTop(50);
+    titleLabel_.setBounds(header.removeFromLeft(205));
+    betaLabel_.setBounds(header.removeFromLeft(48).reduced(2, 11));
+    subtitleLabel_.setBounds(header.removeFromLeft(175).withTrimmedTop(5));
+    modelInfoLabel_.setBounds(header.reduced(4, 3));
 
     auto right = area.removeFromRight(455);
     area.removeFromRight(12);
     auto left = area;
 
-    auto controls = left.removeFromTop(178);
-    auto firstRow = controls.removeFromTop(36);
+    auto controls = left.removeFromTop(182).reduced(8, 3);
+    auto firstRow = controls.removeFromTop(38);
     modelBox_.setBounds(firstRow.removeFromLeft(190).reduced(2));
     constraintBox_.setBounds(firstRow.removeFromLeft(160).reduced(2));
     hitButton_.setBounds(firstRow.removeFromLeft(78).reduced(3));
@@ -780,6 +907,13 @@ void MotionEngineEditor::updateModelLabels()
     const auto names = motion::MotionEngineCore::controlNamesForModel(model);
     for (int i = 0; i < 4; ++i)
         motionLabels_[static_cast<std::size_t>(i)].setText(toJuce(names[static_cast<std::size_t>(i)]), juce::dontSendNotification);
+
+    const auto descriptions = motion::MotionEngineCore::modelDescriptions();
+    const auto models = motion::MotionEngineCore::modelNames();
+    const int safeModel = std::clamp(model, 0, static_cast<int>(models.size()) - 1);
+    modelInfoLabel_.setText(toJuce(models[static_cast<std::size_t>(safeModel)]) + "  ·  "
+                            + toJuce(descriptions[static_cast<std::size_t>(safeModel)]),
+                            juce::dontSendNotification);
 }
 
 void MotionEngineEditor::selectZone(int zone)
@@ -798,11 +932,11 @@ void MotionEngineEditor::syncControls()
     syncing_ = true;
 
     const int modelIndex = plugin_.parameterInt(motion::ids::model);
-    if (!modelBox_.isPopupActive() && modelBox_.getSelectedItemIndex() != modelIndex)
+    if (modelBox_.canAcceptExternalSync() && modelBox_.getSelectedItemIndex() != modelIndex)
         modelBox_.setSelectedItemIndex(modelIndex, juce::dontSendNotification);
 
     const int constraintIndex = plugin_.parameterInt(motion::ids::constraint);
-    if (!constraintBox_.isPopupActive() && constraintBox_.getSelectedItemIndex() != constraintIndex)
+    if (constraintBox_.canAcceptExternalSync() && constraintBox_.getSelectedItemIndex() != constraintIndex)
         constraintBox_.setSelectedItemIndex(constraintIndex, juce::dontSendNotification);
 
     timeSlider_.setValue(plugin_.parameterValue(motion::ids::timeScale), juce::dontSendNotification);
@@ -814,7 +948,7 @@ void MotionEngineEditor::syncControls()
     motionSliders_[2].setValue(plugin_.parameterValue(motion::ids::motionC), juce::dontSendNotification);
     motionSliders_[3].setValue(plugin_.parameterValue(motion::ids::motionD), juce::dontSendNotification);
 
-    if (!zoneBox_.isPopupActive() && zoneBox_.getSelectedItemIndex() != selectedZone_)
+    if (zoneBox_.canAcceptExternalSync() && zoneBox_.getSelectedItemIndex() != selectedZone_)
         zoneBox_.setSelectedItemIndex(selectedZone_, juce::dontSendNotification);
 
     const auto& zone = motion::ids::zones[static_cast<std::size_t>(selectedZone_)];

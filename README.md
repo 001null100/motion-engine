@@ -4,12 +4,12 @@ Motion Engine is a bespoke Windows CLAP plug-in that turns a stateful 2D physics
 
 Instead of drawing LFO curves, you throw a virtual Body into a motion model and map its position, velocity, energy, impacts, audio response, or proximity to Zones onto other parameters.
 
-## v2 native-CLAP rewrite
+## v2 beta
 
-The current rewrite runs directly on [`null-clap`](https://github.com/001null100/null-clap). JUCE remains only as the drawing/window toolkit for the editor; the processor lifecycle, parameters, state, MIDI, audio ports and host integration are native CLAP.
+The current v2 build runs directly on [`null-clap`](https://github.com/001null100/null-clap). JUCE remains only as the drawing/window toolkit for the editor; the processor lifecycle, parameters, state, MIDI, audio ports and host integration are native CLAP.
 
-- Ten specialized motion models: Orbit, Spring, Pendulum, Brownian, Drift, Bounce, Magnet, Explosion, Decay, Follower.
-- Free 2D, horizontal, vertical, diagonal, and circular physical constraints.
+- Ten specialized motion models: Orbit, Spring, Pendulum, Brownian, Drift, Bounce, Lissajous, Impulse, Decay, Follower.
+- Free 2D, horizontal, vertical, diagonal, and circular constraint projections that preserve the underlying model motion.
 - Direct Body drag/flick and manual HIT interaction.
 - Audio envelope/transient analysis plus raw MIDI note-on hits.
 - Four draggable circular Zones with editable radius/falloff.
@@ -19,6 +19,20 @@ The current rewrite runs directly on [`null-clap`](https://github.com/001null100
 - Eight mono CLAP auxiliary outputs for manual audio-rate modulation fallback.
 - Native CLAP automation/modulation and remote-control pages.
 - Pure C++ physics core with lock-free atomic snapshot publication.
+- DPI-aware embedded editor, explicit constraint/model guides, and hardened discrete selector interaction.
+
+### Motion models
+
+- **Orbit** — driven elliptical orbit with shape, rotation and speed control.
+- **Spring** — elastic attraction to an offset anchor with optional swirl.
+- **Pendulum** — gravity-driven tether that can stretch naturally when thrown.
+- **Brownian** — correlated random motion with inertia and directional bias.
+- **Drift** — smooth wandering current with soft wall avoidance.
+- **Bounce** — ballistic movement with gravity, restitution and impact chaos.
+- **Lissajous** — coupled X/Y oscillators tracing evolving geometric curves.
+- **Impulse** — HIT launches a damped vector impulse that rings through center and settles.
+- **Decay** — HIT starts a shrinking orbital ring with controllable wobble.
+- **Follower** — stereo balance drives X; level and transients drive Y.
 
 ## Bitwig integration
 
@@ -44,7 +58,7 @@ In Bitwig, route one of those ports into an **Audio Rate** modulator when the co
 - Drag the Body and release it to throw it with momentum.
 - Drag a Zone center to move it.
 - Drag a Zone ring to change its radius.
-- Double-click the canvas or press **HIT** to disturb the simulation.
+- Double-click the canvas or press **HIT** to disturb/retrigger the current model.
 - Select a Zone above the canvas for exact radius/falloff controls.
 
 ## Architecture
@@ -61,6 +75,6 @@ The rewrite deliberately separates the layers:
 
 The project uses C++20, CMake, `null-clap`, JUCE 9 for GUI only, and Java 21 for the Bitwig Controller Extension.
 
-GitHub Actions builds `MotionEngine.clap`, validates it with `clap-validator`, builds `MotionEngineBridge.bwextension`, and packages both. Pushes to `main` publish an automated v2 alpha prerelease only after validation succeeds.
+GitHub Actions builds `MotionEngine.clap`, validates it with `clap-validator`, runs the deterministic model/constraint regression suite, builds `MotionEngineBridge.bwextension`, and packages both. Pushes to `main` publish an automated v2 beta prerelease only after validation succeeds.
 
 See `docs/TESTING.md` for the current test pass. `docs/V1_ARCHITECTURE.md` documents the original JUCE/VST3 implementation for historical reference.

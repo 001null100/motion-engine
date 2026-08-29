@@ -211,8 +211,8 @@ std::array<std::string_view, 4> MotionEngineCore::controlNamesForModel(int model
         case 3: return { "Activity", "Inertia", "Correlation", "Bias" };
         case 4: return { "Speed", "Wander", "Inertia", "Curl" };
         case 5: return { "Travel Speed", "Restitution", "Gravity", "Impact Chaos" };
-        case 6: return { "Strength", "Range", "Damping", "Polarity" };
-        case 7: return { "Blast Force", "Drag", "Return", "Spin" };
+        case 6: return { "Rate", "Y Ratio", "Phase", "Rotation" };
+        case 7: return { "Force", "Rebound", "Decay", "Direction" };
         case 8: return { "Initial Energy", "Decay", "Rate", "Wobble" };
         case 9: return { "Response", "Damping", "Audio Gain", "Transient Lift" };
         default: return { "A", "B", "C", "D" };
@@ -317,7 +317,7 @@ void MotionEngineCore::resetForModel(int model) noexcept
         case 4:
             x_ = -0.42;
             y_ = 0.18;
-            pendulumAngle_ = (randomSigned() * 0.5 + 0.5) * kTwoPi; // Drift heading.
+            pendulumAngle_ = (randomSigned() * 0.5 + 0.5) * kTwoPi;
             break;
 
         case 5:
@@ -328,10 +328,17 @@ void MotionEngineCore::resetForModel(int model) noexcept
             break;
 
         case 6:
-            x_ = 0.78;
-            y_ = 0.32;
-            vy_ = 0.18;
+        {
+            const double phase = clampUnit(parameters_.motion[2]) * kTwoPi;
+            const double rotation = (clampUnit(parameters_.motion[3]) - 0.5) * kPi;
+            const double co = std::cos(rotation);
+            const double so = std::sin(rotation);
+            const double rawX = 0.0;
+            const double rawY = 0.76 * std::sin(phase);
+            x_ = co * rawX - so * rawY;
+            y_ = so * rawX + co * rawY;
             break;
+        }
 
         case 7:
             x_ = 0.0;
@@ -342,8 +349,8 @@ void MotionEngineCore::resetForModel(int model) noexcept
         case 8:
             x_ = 0.0;
             y_ = 0.0;
-            noiseX_ = 0.0; // Decay amplitude.
-            noiseY_ = 0.0; // Decay phase.
+            noiseX_ = 0.0;
+            noiseY_ = 0.0;
             hitPending_.store(true, std::memory_order_relaxed);
             break;
 
@@ -388,7 +395,7 @@ void MotionEngineCore::step(double dt) noexcept
             noiseX_ = clamp(std::max(noiseX_, std::hypot(x_, y_) + throwSpeed * 0.035), 0.0, 1.0);
             noiseY_ = std::atan2(y_, x_);
             const double cross = x_ * vy_ - y_ * vx_;
-            pendulumVelocity_ = cross < 0.0 ? -1.0 : 1.0; // Rotation direction for Decay.
+            pendulumVelocity_ = cross < 0.0 ? -1.0 : 1.0;
         }
     }
 
@@ -428,15 +435,23 @@ void MotionEngineCore::step(double dt) noexcept
                 break;
             }
 
+            case 6:
+            {
+                const double force = 0.6 + 2.2 * energy;
+                const double angle = elapsed_ * 1.7 + c * kTwoPi;
+                vx_ += std::cos(angle) * force;
+                vy_ += std::sin(angle) * force;
+                break;
+            }
+
             case 7:
             {
-                const double angle = (randomSigned() * 0.5 + 0.5) * kTwoPi;
-                const double force = (2.0 + 8.0 * a) * (0.55 + 0.45 * energy);
-                const double spin = (d - 0.5) * 2.8;
-                x_ = std::cos(angle) * 0.025;
-                y_ = std::sin(angle) * 0.025;
-                vx_ = std::cos(angle) * force - std::sin(angle) * spin;
-                vy_ = std::sin(angle) * force + std::cos(angle) * spin;
+                const double angle = d * kTwoPi;
+                const double force = (1.5 + 6.8 * a) * (0.6 + 0.4 * energy);
+                x_ = 0.0;
+                y_ = 0.0;
+                vx_ = std::cos(angle) * force;
+                vy_ = std::sin(angle) * force;
                 break;
             }
 
@@ -520,8 +535,6 @@ void MotionEngineCore::step(double dt) noexcept
 
         case 2:
         {
-            // A rope-like pendulum rather than an exact rigid rod. Dragging beyond
-            // Length creates tension and is pulled back smoothly instead of snapping.
             constexpr double anchorY = 0.12;
             const double length = 0.28 + a * 0.67;
             const double gravity = 1.0 + b * 16.0;
@@ -576,9 +589,6 @@ void MotionEngineCore::step(double dt) noexcept
 
         case 4:
         {
-            // Drift is a smooth cruising current. Wander changes heading slowly,
-            // Inertia controls how reluctantly velocity follows that heading, and
-            // Curl adds a persistent turn. Soft wall steering prevents corner traps.
             const double speed = 0.12 + a * 1.05;
             const double wander = 0.15 + b * 1.85;
             const double response = 0.7 + (1.0 - c) * 4.5;
@@ -594,7 +604,7 @@ void MotionEngineCore::step(double dt) noexcept
             double desiredY = std::sin(pendulumAngle_) * speed;
 
             constexpr double wallStart = 0.72;
-            const double wallGain = 7.0;
+            constexpr double wallGain = 7.0;
             if (std::abs(x_) > wallStart)
                 desiredX += -std::copysign((std::abs(x_) - wallStart) * wallGain * speed, x_);
             if (std::abs(y_) > wallStart)
@@ -627,7 +637,6 @@ void MotionEngineCore::step(double dt) noexcept
                 vy_ += vy_ / currentSpeed * correction * dt;
             }
 
-            // World +Y is visually up, so gravity must accelerate toward -Y.
             vy_ -= gravity * dt;
             x_ += vx_ * dt;
             y_ += vy_ * dt;
@@ -637,55 +646,50 @@ void MotionEngineCore::step(double dt) noexcept
 
         case 6:
         {
-            // Smooth finite center field: no 1/r singularity and no implicit vortex.
-            const double distance = std::hypot(x_, y_);
-            const double range = 0.22 + b * 1.35;
-            const double strength = 0.4 + a * 9.0;
-            const double damping = 0.2 + c * 5.0;
-            const double polarity = d < 0.5 ? -1.0 : 1.0; // Left half repels, right half attracts.
+            // Coupled oscillators generate a rich but predictable geometric path.
+            // The body follows the analytic target with a little inertia so direct
+            // drag/throw gestures still feel physical rather than snapping back.
+            const double rateHz = 0.08 + a * 1.35;
+            const double ratio = 1.0 + b * 2.5;
+            const double phase = c * kTwoPi;
+            const double rotation = (d - 0.5) * kPi;
+            const double t = elapsed_ * kTwoPi * rateHz;
+            const double rawX = 0.76 * std::sin(t);
+            const double rawY = 0.76 * std::sin(t * ratio + phase);
+            const double co = std::cos(rotation);
+            const double so = std::sin(rotation);
+            const double targetX = co * rawX - so * rawY;
+            const double targetY = so * rawX + co * rawY;
+            constexpr double pull = 25.0;
+            constexpr double damping = 8.0;
 
-            if (distance > 1.0e-5)
-            {
-                const double nx = -x_ / distance;
-                const double ny = -y_ / distance;
-                const double normalized = distance / std::max(0.05, range);
-                const double attenuation = 1.0 / (1.0 + normalized * normalized);
-                const double force = strength * distance * attenuation * polarity;
-                vx_ += (nx * force - damping * vx_) * dt;
-                vy_ += (ny * force - damping * vy_) * dt;
-            }
-            else
-            {
-                const double dampFactor = std::exp(-damping * dt);
-                vx_ *= dampFactor;
-                vy_ *= dampFactor;
-            }
-
+            vx_ += ((targetX - x_) * pull - vx_ * damping) * dt;
+            vy_ += ((targetY - y_) * pull - vy_ * damping) * dt;
             x_ += vx_ * dt;
             y_ += vy_ * dt;
-            containBody(true, 0.5, 0.0);
+            containBody(false, 0.0, 0.0);
             break;
         }
 
         case 7:
         {
-            // HIT restarts a ballistic blast from the center. Return is deliberately
-            // gentle so the visible identity is "burst outward", not "center spring".
-            const double drag = 0.08 + b * 3.4;
-            const double returnForce = c * c * 1.5;
-            const double spin = (d - 0.5) * 2.4;
-            vx_ += (-returnForce * x_ - drag * vx_ - spin * y_) * dt;
-            vy_ += (-returnForce * y_ - drag * vy_ + spin * x_) * dt;
+            // A musical trigger model: HIT supplies the initial vector; Rebound sets
+            // the center spring frequency and Decay controls how long it rings.
+            const double rebound = 2.0 + b * 28.0;
+            const double decay = 0.35 + c * 6.0;
+            vx_ += -rebound * x_ * dt;
+            vy_ += -rebound * y_ * dt;
+            const double dampFactor = std::exp(-decay * dt);
+            vx_ *= dampFactor;
+            vy_ *= dampFactor;
             x_ += vx_ * dt;
             y_ += vy_ * dt;
-            containBody(true, 0.25, 0.06);
+            containBody(true, 0.24 + b * 0.28, 0.0);
             break;
         }
 
         case 8:
         {
-            // A decaying ring started by HIT. It is intentionally analytic so its
-            // identity remains obvious and does not collapse into another spring.
             const double decay = 0.18 + b * 4.2;
             const double rateHz = 0.12 + c * 1.45;
             const double wobble = d * 0.38;
@@ -710,9 +714,6 @@ void MotionEngineCore::step(double dt) noexcept
 
         case 9:
         {
-            // Follower maps stereo balance to X and level to Y. Balanced/mono audio
-            // therefore sits on X=0; transients add a short upward lift instead of
-            // inventing a persistent X offset.
             const double response = 0.8 + a * 28.0;
             const double damping = 0.2 + b * 8.0;
             const double gain = 0.5 + c * 5.0;
@@ -758,9 +759,9 @@ void MotionEngineCore::applyGlobalForces(double dt) noexcept
 
 void MotionEngineCore::applyConstraint() noexcept
 {
-    // Constraints are intentionally a presentation/output projection now.
-    // Mutating the model state here caused models such as Orbit to continuously
-    // fight the constraint and produced inconsistent motion.
+    // Constraints are intentionally a presentation/output projection. Mutating
+    // model state here causes path generators such as Orbit and Lissajous to fight
+    // the constraint instead of simply exposing their motion through it.
 }
 
 void MotionEngineCore::containBody(bool bounce, double restitution, double chaos) noexcept
@@ -871,20 +872,16 @@ float MotionEngineCore::transformOutput(int index, float source, double dt) noex
         case 1:
             source = source * source * (3.0f - 2.0f * source);
             break;
-
         case 2:
             source = source * source;
             break;
-
         case 3:
             source = std::sqrt(source);
             break;
-
         case 4:
             source = source < 0.5f ? 2.0f * source * source
                                    : 1.0f - 2.0f * (1.0f - source) * (1.0f - source);
             break;
-
         default:
             break;
     }
@@ -911,8 +908,6 @@ float MotionEngineCore::transformOutput(int index, float source, double dt) noex
 
 double MotionEngineCore::randomSigned() noexcept
 {
-    // Small deterministic xorshift generator. It lives exclusively on the audio
-    // thread, so no locks or library RNG state are needed in the hot path.
     std::uint32_t x = randomState_;
     x ^= x << 13;
     x ^= x >> 17;

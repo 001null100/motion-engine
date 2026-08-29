@@ -116,8 +116,8 @@ int main()
         }
     }
 
-    // Constraints are projections, so they must remain exact for every model,
-    // including Orbit, without feeding the projection back into the model physics.
+    // Constraints are output projections and must stay exact for every model,
+    // including analytic path generators such as Orbit and Lissajous.
     for (int model = 0; model < 10; ++model)
     {
         for (int constraint = 1; constraint <= 4; ++constraint)
@@ -166,6 +166,61 @@ int main()
         if (radiusFromAnchor < requestedLength + 0.25)
         {
             std::cerr << "pendulum snapped to length after drag\n";
+            return 1;
+        }
+    }
+
+    // Lissajous should traverse meaningfully in both axes instead of collapsing to
+    // a tiny center orbit or becoming another force-field model.
+    {
+        motion::Parameters parameters;
+        parameters.model = 6;
+        parameters.motion = { 0.42, 0.48, 0.17, 0.61 };
+        parameters.globalDamping = 0.0;
+        parameters.audioKick = 0.0;
+        core.setParameters(parameters);
+        core.requestReset();
+
+        float minX = 1.0f, maxX = -1.0f, minY = 1.0f, maxY = -1.0f;
+        for (int step = 0; step < 1800; ++step)
+        {
+            core.process(1.0 / 240.0, {});
+            const auto snapshot = core.getSnapshot();
+            minX = std::min(minX, snapshot.x);
+            maxX = std::max(maxX, snapshot.x);
+            minY = std::min(minY, snapshot.y);
+            maxY = std::max(maxY, snapshot.y);
+        }
+
+        if (maxX - minX < 0.75f || maxY - minY < 0.75f)
+        {
+            std::cerr << "lissajous path did not span both axes\n";
+            return 1;
+        }
+    }
+
+    // Impulse should start energetic on HIT and audibly/usefully settle rather than
+    // behaving as a perpetual projectile or another center vortex.
+    {
+        motion::Parameters parameters;
+        parameters.model = 7;
+        parameters.motion = { 0.82, 0.46, 0.62, 0.125 };
+        parameters.globalDamping = 0.0;
+        parameters.audioKick = 0.0;
+        core.setParameters(parameters);
+        core.requestReset();
+
+        for (int i = 0; i < 8; ++i)
+            core.process(1.0 / 240.0, {});
+        const float initialSpeed = core.getSnapshot().speed;
+
+        for (int i = 0; i < 1200; ++i)
+            core.process(1.0 / 240.0, {});
+        const auto settled = core.getSnapshot();
+
+        if (initialSpeed < 0.35f || settled.speed > 0.08f || std::hypot(settled.x, settled.y) > 0.12f)
+        {
+            std::cerr << "impulse did not launch strongly and settle cleanly\n";
             return 1;
         }
     }
