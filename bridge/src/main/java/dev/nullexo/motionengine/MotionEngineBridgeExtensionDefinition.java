@@ -14,7 +14,7 @@ public final class MotionEngineBridgeExtensionDefinition extends ControllerExten
 
     @Override public String getName() { return "Motion Engine Bridge"; }
     @Override public String getAuthor() { return "Null Exo"; }
-    @Override public String getVersion() { return "0.2.1"; }
+    @Override public String getVersion() { return "0.3.0"; }
     @Override public UUID getId() { return ID; }
     @Override public int getRequiredAPIVersion() { return 25; }
     @Override public String getHardwareVendor() { return "Motion Engine"; }
