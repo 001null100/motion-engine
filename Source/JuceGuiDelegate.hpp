@@ -3,6 +3,7 @@
 #include "MotionEnginePlugin.hpp"
 
 #include <nullclap/Gui.hpp>
+#include <nullclap/PhysicalPixelGuiSizing.hpp>
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <cstdint>
@@ -31,9 +32,10 @@ public:
     bool setParent(const clap_window_t& window) noexcept override;
 
 private:
+    void applyLogicalEditorSize() noexcept;
+
     MotionEnginePlugin& plugin_;
     std::unique_ptr<juce::ScopedJuceInitialiser_GUI> juceInitialiser_;
     std::unique_ptr<MotionEngineEditor> editor_;
-    std::uint32_t width_ = 1320;
-    std::uint32_t height_ = 820;
+    nullclap::PhysicalPixelGuiSizing sizing_ { 1320, 820, 1120, 700, 1800, 1100 };
 };
