@@ -99,7 +99,23 @@ public:
 
     static constexpr std::array<std::string_view, 10> modelNames() noexcept
     {
-        return { "Orbit", "Spring", "Pendulum", "Brownian", "Drift", "Bounce", "Magnet", "Explosion", "Decay", "Follower" };
+        return { "Orbit", "Spring", "Pendulum", "Brownian", "Drift", "Bounce", "Lissajous", "Impulse", "Decay", "Follower" };
+    }
+
+    static constexpr std::array<std::string_view, 10> modelDescriptions() noexcept
+    {
+        return {
+            "Driven elliptical orbit with shape and rotation control.",
+            "Elastic attraction to an offset anchor with optional swirl.",
+            "Gravity-driven tether that can stretch naturally when thrown.",
+            "Correlated random motion with inertia and directional bias.",
+            "Smooth wandering current with soft wall avoidance.",
+            "Ballistic motion with gravity, restitution and impact chaos.",
+            "Coupled oscillators tracing evolving geometric curves.",
+            "HIT launches a damped back-and-forth vector impulse.",
+            "HIT starts a shrinking orbital ring with controllable wobble.",
+            "Stereo balance drives X; audio level and transients drive Y."
+        };
     }
 
     static constexpr std::array<std::string_view, 5> constraintNames() noexcept
