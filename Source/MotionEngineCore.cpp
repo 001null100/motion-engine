@@ -155,6 +155,8 @@ void MotionEngineCore::resetNow() noexcept
     accumulator_ = 0.0;
     elapsed_ = 0.0;
     trajectoryPhase_ = 0.0;
+    trajectoryDeviationX_ = trajectoryDeviationY_ = 0.0;
+    trajectoryDeviationVX_ = trajectoryDeviationVY_ = 0.0;
     audioEnvelope_ = 0.0;
     audioBalance_ = 0.0;
     transientEnvelope_ = 0.0;
@@ -279,6 +281,8 @@ void MotionEngineCore::resetForModel(int model) noexcept
 {
     lastModel_ = clamp(model, 0, 9);
     trajectoryPhase_ = 0.0;
+    trajectoryDeviationX_ = trajectoryDeviationY_ = 0.0;
+    trajectoryDeviationVX_ = trajectoryDeviationVY_ = 0.0;
     vx_ = vy_ = 0.0;
     pendulumVelocity_ = 0.0;
     noiseX_ = noiseY_ = 0.0;
@@ -372,13 +376,37 @@ void MotionEngineCore::step(double dt) noexcept
     if (model != lastModel_)
         resetForModel(model);
 
+    const double a = clampUnit(parameters_.motion[0]);
+    const double b = clampUnit(parameters_.motion[1]);
+    const double c = clampUnit(parameters_.motion[2]);
+    const double d = clampUnit(parameters_.motion[3]);
+    const double energy = clamp(parameters_.energy, 0.0, 2.5);
+
     if (dragging_.load(std::memory_order_acquire))
     {
         x_ = dragX_.load(std::memory_order_relaxed);
         y_ = dragY_.load(std::memory_order_relaxed);
         vx_ = vy_ = 0.0;
 
-        if (model == 8)
+        if (model == 0)
+        {
+            const auto base = paths::orbitPoint(a, b, c, trajectoryPhase_);
+            const auto baseVelocity = paths::orbitVelocity(a, b, c, d, trajectoryPhase_);
+            trajectoryDeviationX_ = x_ - base.x;
+            trajectoryDeviationY_ = y_ - base.y;
+            trajectoryDeviationVX_ = -baseVelocity.x;
+            trajectoryDeviationVY_ = -baseVelocity.y;
+        }
+        else if (model == 6)
+        {
+            const auto base = paths::lissajousPoint(b, c, d, trajectoryPhase_);
+            const auto baseVelocity = paths::lissajousVelocity(a, b, c, d, trajectoryPhase_);
+            trajectoryDeviationX_ = x_ - base.x;
+            trajectoryDeviationY_ = y_ - base.y;
+            trajectoryDeviationVX_ = -baseVelocity.x;
+            trajectoryDeviationVY_ = -baseVelocity.y;
+        }
+        else if (model == 8)
         {
             noiseX_ = clamp(std::hypot(x_, y_), 0.0, 1.0);
             noiseY_ = std::atan2(y_, x_);
@@ -388,36 +416,57 @@ void MotionEngineCore::step(double dt) noexcept
 
     if (throwPending_.exchange(false, std::memory_order_acq_rel))
     {
-        vx_ = throwVX_.load(std::memory_order_relaxed);
-        vy_ = throwVY_.load(std::memory_order_relaxed);
+        const double throwVX = throwVX_.load(std::memory_order_relaxed);
+        const double throwVY = throwVY_.load(std::memory_order_relaxed);
 
         if (model == 0)
         {
-            const double radius = paths::orbitRadius(parameters_.motion[0]);
-            const double aspect = paths::orbitAspect(parameters_.motion[1]);
-            const double rotation = clampUnit(parameters_.motion[2]) * kPi;
+            // Re-anchor the reference phase near the release point, but preserve the
+            // body's actual position as a deviation so release never snaps to the rail.
+            const double radius = paths::orbitRadius(a);
+            const double aspect = paths::orbitAspect(b);
+            const double rotation = c * kPi;
             const double co = std::cos(rotation);
             const double so = std::sin(rotation);
             const double localX = co * x_ + so * y_;
             const double localY = -so * x_ + co * y_;
             trajectoryPhase_ = paths::wrapPhase(std::atan2(localY / std::max(1.0e-6, radius * aspect),
                                                            localX / std::max(1.0e-6, radius)));
+            const auto base = paths::orbitPoint(a, b, c, trajectoryPhase_);
+            const auto baseVelocity = paths::orbitVelocity(a, b, c, d, trajectoryPhase_);
+            trajectoryDeviationX_ = x_ - base.x;
+            trajectoryDeviationY_ = y_ - base.y;
+            trajectoryDeviationVX_ = throwVX - baseVelocity.x;
+            trajectoryDeviationVY_ = throwVY - baseVelocity.y;
+            vx_ = throwVX;
+            vy_ = throwVY;
         }
-        else if (model == 8)
+        else if (model == 6)
         {
-            const double throwSpeed = std::hypot(vx_, vy_);
-            noiseX_ = clamp(std::max(noiseX_, std::hypot(x_, y_) + throwSpeed * 0.035), 0.0, 1.0);
-            noiseY_ = std::atan2(y_, x_);
-            const double cross = x_ * vy_ - y_ * vx_;
-            pendulumVelocity_ = cross < 0.0 ? -1.0 : 1.0;
+            const auto base = paths::lissajousPoint(b, c, d, trajectoryPhase_);
+            const auto baseVelocity = paths::lissajousVelocity(a, b, c, d, trajectoryPhase_);
+            trajectoryDeviationX_ = x_ - base.x;
+            trajectoryDeviationY_ = y_ - base.y;
+            trajectoryDeviationVX_ = throwVX - baseVelocity.x;
+            trajectoryDeviationVY_ = throwVY - baseVelocity.y;
+            vx_ = throwVX;
+            vy_ = throwVY;
+        }
+        else
+        {
+            vx_ = throwVX;
+            vy_ = throwVY;
+
+            if (model == 8)
+            {
+                const double throwSpeed = std::hypot(vx_, vy_);
+                noiseX_ = clamp(std::max(noiseX_, std::hypot(x_, y_) + throwSpeed * 0.035), 0.0, 1.0);
+                noiseY_ = std::atan2(y_, x_);
+                const double cross = x_ * vy_ - y_ * vx_;
+                pendulumVelocity_ = cross < 0.0 ? -1.0 : 1.0;
+            }
         }
     }
-
-    const double a = clampUnit(parameters_.motion[0]);
-    const double b = clampUnit(parameters_.motion[1]);
-    const double c = clampUnit(parameters_.motion[2]);
-    const double d = clampUnit(parameters_.motion[3]);
-    const double energy = clamp(parameters_.energy, 0.0, 2.5);
 
     const bool hit = hitPending_.exchange(false, std::memory_order_acq_rel);
     if (hit)
@@ -427,9 +476,13 @@ void MotionEngineCore::step(double dt) noexcept
         switch (model)
         {
             case 0:
-            case 6:
-                // Deterministic trajectory modes do not leave their displayed path.
+            {
+                const double force = 0.7 + 1.7 * energy;
+                const double hitDirection = std::atan2(y_, x_) + 0.48;
+                trajectoryDeviationVX_ += std::cos(hitDirection) * force;
+                trajectoryDeviationVY_ += std::sin(hitDirection) * force;
                 break;
+            }
 
             case 2:
             {
@@ -442,6 +495,17 @@ void MotionEngineCore::step(double dt) noexcept
                 const double force = (1.0 + 4.5 * energy) * (0.55 + 0.45 * a);
                 vx_ += tx * force;
                 vy_ += ty * force;
+                break;
+            }
+
+            case 6:
+            {
+                const auto baseVelocity = paths::lissajousVelocity(a, b, c, d, trajectoryPhase_);
+                const double tangentAngle = std::atan2(baseVelocity.y, baseVelocity.x);
+                const double force = 0.6 + 2.2 * energy;
+                const double hitDirection = tangentAngle + 0.72;
+                trajectoryDeviationVX_ += std::cos(hitDirection) * force;
+                trajectoryDeviationVY_ += std::sin(hitDirection) * force;
                 break;
             }
 
@@ -481,12 +545,46 @@ void MotionEngineCore::step(double dt) noexcept
         case 0:
         {
             trajectoryPhase_ = paths::wrapPhase(trajectoryPhase_ + paths::kTwoPi * paths::orbitRateHz(d) * dt);
-            const auto point = paths::orbitPoint(a, b, c, trajectoryPhase_);
-            const auto velocity = paths::orbitVelocity(a, b, c, d, trajectoryPhase_);
-            x_ = point.x;
-            y_ = point.y;
-            vx_ = velocity.x;
-            vy_ = velocity.y;
+            const auto base = paths::orbitPoint(a, b, c, trajectoryPhase_);
+            const auto baseVelocity = paths::orbitVelocity(a, b, c, d, trajectoryPhase_);
+
+            constexpr double returnStrength = 8.0;
+            const double returnDamping = 3.2 + clamp(parameters_.globalDamping, 0.0, 4.0) * 1.35;
+            trajectoryDeviationVX_ += -returnStrength * trajectoryDeviationX_ * dt;
+            trajectoryDeviationVY_ += -returnStrength * trajectoryDeviationY_ * dt;
+            const double deviationDamp = std::exp(-returnDamping * dt);
+            trajectoryDeviationVX_ *= deviationDamp;
+            trajectoryDeviationVY_ *= deviationDamp;
+
+            const double audioKick = clamp(parameters_.audioKick, 0.0, 3.0);
+            if (audioKick > 0.0 && transientEnvelope_ > 0.001)
+            {
+                const double angle = elapsed_ * 2.173 + audioBalance_ * 1.7;
+                const double force = transientEnvelope_ * audioKick * 2.5;
+                trajectoryDeviationVX_ += std::cos(angle) * force * dt;
+                trajectoryDeviationVY_ += std::sin(angle) * force * dt;
+            }
+
+            trajectoryDeviationX_ += trajectoryDeviationVX_ * dt;
+            trajectoryDeviationY_ += trajectoryDeviationVY_ * dt;
+            x_ = base.x + trajectoryDeviationX_;
+            y_ = base.y + trajectoryDeviationY_;
+            vx_ = baseVelocity.x + trajectoryDeviationVX_;
+            vy_ = baseVelocity.y + trajectoryDeviationVY_;
+
+            auto containAxis = [](double basePosition, double baseVelocity,
+                                  double& deviationPosition, double& deviationVelocity,
+                                  double& position, double& velocity)
+            {
+                if (position >= -1.0 && position <= 1.0)
+                    return;
+                position = clampWorld(position);
+                deviationPosition = position - basePosition;
+                deviationVelocity *= -0.38;
+                velocity = baseVelocity + deviationVelocity;
+            };
+            containAxis(base.x, baseVelocity.x, trajectoryDeviationX_, trajectoryDeviationVX_, x_, vx_);
+            containAxis(base.y, baseVelocity.y, trajectoryDeviationY_, trajectoryDeviationVY_, y_, vy_);
             break;
         }
 
@@ -619,13 +717,49 @@ void MotionEngineCore::step(double dt) noexcept
 
         case 6:
         {
-            trajectoryPhase_ = paths::wrapPhase(trajectoryPhase_ + paths::kTwoPi * paths::lissajousRateHz(a) * dt);
-            const auto point = paths::lissajousPoint(b, c, d, trajectoryPhase_);
-            const auto velocity = paths::lissajousVelocity(a, b, c, d, trajectoryPhase_);
-            x_ = point.x;
-            y_ = point.y;
-            vx_ = velocity.x;
-            vy_ = velocity.y;
+            // Do not wrap this phase. For fractional Y ratios, fmod(phase, 2pi)
+            // changes sin(phase * ratio) discontinuously once per X cycle.
+            trajectoryPhase_ += paths::kTwoPi * paths::lissajousRateHz(a) * dt;
+            const auto base = paths::lissajousPoint(b, c, d, trajectoryPhase_);
+            const auto baseVelocity = paths::lissajousVelocity(a, b, c, d, trajectoryPhase_);
+
+            constexpr double returnStrength = 8.0;
+            const double returnDamping = 3.2 + clamp(parameters_.globalDamping, 0.0, 4.0) * 1.35;
+            trajectoryDeviationVX_ += -returnStrength * trajectoryDeviationX_ * dt;
+            trajectoryDeviationVY_ += -returnStrength * trajectoryDeviationY_ * dt;
+            const double deviationDamp = std::exp(-returnDamping * dt);
+            trajectoryDeviationVX_ *= deviationDamp;
+            trajectoryDeviationVY_ *= deviationDamp;
+
+            const double audioKick = clamp(parameters_.audioKick, 0.0, 3.0);
+            if (audioKick > 0.0 && transientEnvelope_ > 0.001)
+            {
+                const double angle = elapsed_ * 2.173 + audioBalance_ * 1.7;
+                const double force = transientEnvelope_ * audioKick * 2.5;
+                trajectoryDeviationVX_ += std::cos(angle) * force * dt;
+                trajectoryDeviationVY_ += std::sin(angle) * force * dt;
+            }
+
+            trajectoryDeviationX_ += trajectoryDeviationVX_ * dt;
+            trajectoryDeviationY_ += trajectoryDeviationVY_ * dt;
+            x_ = base.x + trajectoryDeviationX_;
+            y_ = base.y + trajectoryDeviationY_;
+            vx_ = baseVelocity.x + trajectoryDeviationVX_;
+            vy_ = baseVelocity.y + trajectoryDeviationVY_;
+
+            auto containAxis = [](double basePosition, double baseVelocity,
+                                  double& deviationPosition, double& deviationVelocity,
+                                  double& position, double& velocity)
+            {
+                if (position >= -1.0 && position <= 1.0)
+                    return;
+                position = clampWorld(position);
+                deviationPosition = position - basePosition;
+                deviationVelocity *= -0.32;
+                velocity = baseVelocity + deviationVelocity;
+            };
+            containAxis(base.x, baseVelocity.x, trajectoryDeviationX_, trajectoryDeviationVX_, x_, vx_);
+            containAxis(base.y, baseVelocity.y, trajectoryDeviationY_, trajectoryDeviationVY_, y_, vy_);
             break;
         }
 
@@ -689,8 +823,8 @@ void MotionEngineCore::step(double dt) noexcept
             break;
     }
 
-    // Orbit and Lissajous are deterministic path generators. Applying global
-    // velocity forces to them would make the body leave the route shown in the UI.
+    // Orbit/Lissajous apply global drag and Audio Kick to their deviation state so
+    // the reference route remains deterministic. Decay owns its own envelope.
     if (model != 0 && model != 6 && model != 8)
         applyGlobalForces(dt);
 
@@ -766,7 +900,7 @@ void MotionEngineCore::publishSnapshot(double realDt) noexcept
     next.impact = static_cast<float>(clampUnit(impactEnvelope_));
     next.audioEnvelope = static_cast<float>(clampUnit(audioEnvelope_ * 2.5));
     next.transient = static_cast<float>(clampUnit(transientEnvelope_));
-    next.trajectoryPhase = static_cast<float>(paths::wrapPhase(trajectoryPhase_));
+    next.trajectoryPhase = trajectoryPhase_;
 
     for (int zone = 0; zone < kNumZones; ++zone)
     {

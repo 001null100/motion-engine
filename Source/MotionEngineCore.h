@@ -78,7 +78,7 @@ public:
         float impact = 0.0f;
         float audioEnvelope = 0.0f;
         float transient = 0.0f;
-        float trajectoryPhase = 0.0f;
+        double trajectoryPhase = 0.0;
         std::array<float, kNumZones> zones {};
         std::array<float, kNumOutputs> outputs {};
     };
@@ -106,13 +106,13 @@ public:
     static constexpr std::array<std::string_view, 10> modelDescriptions() noexcept
     {
         return {
-            "Exact elliptical trajectory; speed changes timing without bending the orbit.",
+            "Elliptical base route with physical HIT/throw deviations that settle back smoothly.",
             "Elastic attraction to an offset anchor with optional swirl.",
             "Gravity-driven tether that can stretch naturally when thrown.",
             "Correlated random motion with inertia and directional bias.",
             "Smooth wandering current with soft wall avoidance.",
             "Ballistic motion with gravity, restitution and impact chaos.",
-            "Exact coupled oscillators; the body lives directly on the displayed curve.",
+            "Coupled-oscillator base route with physical deviations and continuous fractional ratios.",
             "HIT launches a damped back-and-forth vector impulse.",
             "HIT starts a shrinking orbital ring with controllable wobble.",
             "Stereo balance drives X; audio level and transients drive Y."
@@ -151,7 +151,7 @@ private:
         std::atomic<float> impact { 0.0f };
         std::atomic<float> audioEnvelope { 0.0f };
         std::atomic<float> transient { 0.0f };
-        std::atomic<float> trajectoryPhase { 0.0f };
+        std::atomic<double> trajectoryPhase { 0.0 };
         std::array<std::atomic<float>, kNumZones> zones {};
         std::array<std::atomic<float>, kNumOutputs> outputs {};
 
@@ -183,6 +183,15 @@ private:
     double y_ = 0.0;
     double vx_ = 0.0;
     double vy_ = 0.0;
+
+    // Orbit and Lissajous have an exact deterministic base route plus a physical
+    // deviation. HIT, drag throws and Audio Kick act on this deviation instead of
+    // destroying the route geometry. A damped spring returns it to zero over time.
+    double trajectoryDeviationX_ = 0.0;
+    double trajectoryDeviationY_ = 0.0;
+    double trajectoryDeviationVX_ = 0.0;
+    double trajectoryDeviationVY_ = 0.0;
+
     double pendulumAngle_ = 0.65;
     double pendulumVelocity_ = 0.0;
     double noiseX_ = 0.0;

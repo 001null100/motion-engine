@@ -14,6 +14,11 @@ bool finite(float value) noexcept
     return std::isfinite(static_cast<double>(value));
 }
 
+bool finite(double value) noexcept
+{
+    return std::isfinite(value);
+}
+
 bool normalized(float value) noexcept
 {
     return finite(value) && value >= -1.0e-4f && value <= 1.0001f;
@@ -59,6 +64,22 @@ bool constraintSatisfied(const motion::MotionEngineCore::Snapshot& snapshot, int
         case 4: return std::abs(std::hypot(snapshot.x, snapshot.y) - 0.72f) <= 3.0e-3f;
         default: return true;
     }
+}
+
+double orbitDeviation(const motion::MotionEngineCore::Snapshot& snapshot, const motion::Parameters& parameters)
+{
+    const auto base = motion::paths::orbitPoint(parameters.motion[0], parameters.motion[1],
+                                                parameters.motion[2], snapshot.trajectoryPhase);
+    return std::hypot(static_cast<double>(snapshot.x) - base.x,
+                      static_cast<double>(snapshot.y) - base.y);
+}
+
+double lissajousDeviation(const motion::MotionEngineCore::Snapshot& snapshot, const motion::Parameters& parameters)
+{
+    const auto base = motion::paths::lissajousPoint(parameters.motion[1], parameters.motion[2],
+                                                    parameters.motion[3], snapshot.trajectoryPhase);
+    return std::hypot(static_cast<double>(snapshot.x) - base.x,
+                      static_cast<double>(snapshot.y) - base.y);
 }
 } // namespace
 
@@ -172,14 +193,14 @@ int main()
         }
     }
 
-    // Orbit Speed is temporal only: low and high speeds must stay on precisely the
-    // same ellipse instead of changing radius or turning into a speed-dependent loop.
+    // Orbit Speed is temporal only when undisturbed: low and high speeds must stay
+    // on precisely the same reference ellipse.
     for (const double speedControl : { 0.0, 1.0 })
     {
         motion::Parameters parameters;
         parameters.model = 0;
         parameters.motion = { 0.58, 0.86, 0.37, speedControl };
-        parameters.globalDamping = 1.8; // deterministic Orbit must ignore global forces
+        parameters.globalDamping = 1.8;
         parameters.audioKick = 2.0;
         core.setParameters(parameters);
         core.requestReset();
@@ -200,15 +221,83 @@ int main()
                                            + (localY * localY) / (radius * radius * aspect * aspect));
             if (std::abs(ellipse - 1.0) > 2.0e-4)
             {
-                std::cerr << "orbit left exact ellipse at speed control " << speedControl
+                std::cerr << "orbit left reference ellipse at speed control " << speedControl
                           << ", step " << step << ", error " << std::abs(ellipse - 1.0) << '\n';
                 return 1;
             }
         }
     }
 
-    // Lissajous body and preview share MotionPaths. Verify the published body sits
-    // exactly on that shared route at low, medium and high rates, including Rate=0.
+    // Orbit HIT must leave the route and then settle back onto it.
+    {
+        motion::Parameters parameters;
+        parameters.model = 0;
+        parameters.energy = 1.5;
+        parameters.motion = { 0.58, 0.42, 0.31, 0.46 };
+        parameters.globalDamping = 0.35;
+        parameters.audioKick = 0.0;
+        core.setParameters(parameters);
+        core.requestReset();
+        for (int i = 0; i < 120; ++i)
+            core.process(1.0 / 240.0, {});
+
+        core.triggerHit();
+        for (int i = 0; i < 18; ++i)
+            core.process(1.0 / 240.0, {});
+        const double kickedDeviation = orbitDeviation(core.getSnapshot(), parameters);
+        if (kickedDeviation < 0.025)
+        {
+            std::cerr << "orbit HIT did not leave the reference route\n";
+            return 1;
+        }
+
+        for (int i = 0; i < 1600; ++i)
+            core.process(1.0 / 240.0, {});
+        if (orbitDeviation(core.getSnapshot(), parameters) > 0.035)
+        {
+            std::cerr << "orbit HIT deviation did not settle back to route\n";
+            return 1;
+        }
+    }
+
+    // Dragging Orbit off-route and releasing must be continuous. The nearest route
+    // phase may be re-anchored, but the body itself must never snap onto that phase.
+    {
+        motion::Parameters parameters;
+        parameters.model = 0;
+        parameters.motion = { 0.54, 0.73, 0.22, 0.35 };
+        parameters.globalDamping = 0.3;
+        parameters.audioKick = 0.0;
+        core.setParameters(parameters);
+        core.requestReset();
+        for (int i = 0; i < 60; ++i)
+            core.process(1.0 / 240.0, {});
+
+        core.beginDrag(0.86f, -0.71f);
+        core.process(1.0 / 240.0, {});
+        const auto held = core.getSnapshot();
+        core.endDrag(1.35f, -0.55f);
+        core.process(1.0 / 240.0, {});
+        const auto released = core.getSnapshot();
+        const double releaseJump = std::hypot(static_cast<double>(released.x - held.x),
+                                              static_cast<double>(released.y - held.y));
+        if (releaseJump > 0.08)
+        {
+            std::cerr << "orbit snapped on drag release, jump " << releaseJump << '\n';
+            return 1;
+        }
+
+        for (int i = 0; i < 1800; ++i)
+            core.process(1.0 / 240.0, {});
+        if (orbitDeviation(core.getSnapshot(), parameters) > 0.05)
+        {
+            std::cerr << "orbit drag deviation did not return to route\n";
+            return 1;
+        }
+    }
+
+    // Undisturbed Lissajous body and preview share MotionPaths. Verify the body sits
+    // exactly on that reference route at low, medium and high rates, including Rate=0.
     for (const double rateControl : { 0.0, 0.42, 1.0 })
     {
         motion::Parameters parameters;
@@ -223,15 +312,73 @@ int main()
         {
             core.process(1.0 / 240.0, {});
             const auto snapshot = core.getSnapshot();
-            const auto expected = motion::paths::lissajousPoint(parameters.motion[1], parameters.motion[2],
-                                                                parameters.motion[3], snapshot.trajectoryPhase);
-            if (std::abs(static_cast<double>(snapshot.x) - expected.x) > 2.0e-4
-                || std::abs(static_cast<double>(snapshot.y) - expected.y) > 2.0e-4)
+            if (lissajousDeviation(snapshot, parameters) > 2.0e-4)
             {
                 std::cerr << "lissajous body diverged from shared route at rate control " << rateControl
                           << ", step " << step << '\n';
                 return 1;
             }
+        }
+    }
+
+    // Fractional ratios are not periodic over one X cycle. The core phase must not
+    // wrap at 2pi, otherwise Y teleports each time X begins another cycle.
+    {
+        motion::Parameters parameters;
+        parameters.model = 6;
+        parameters.motion = { 0.52, 0.37, 0.23, 0.58 }; // Y ratio = 1.925
+        parameters.globalDamping = 0.0;
+        parameters.audioKick = 0.0;
+        core.setParameters(parameters);
+        core.requestReset();
+        core.process(1.0 / 240.0, {});
+
+        auto previous = core.getSnapshot();
+        double maxStepDistance = 0.0;
+        for (int step = 0; step < 3600; ++step)
+        {
+            core.process(1.0 / 240.0, {});
+            const auto snapshot = core.getSnapshot();
+            maxStepDistance = std::max(maxStepDistance,
+                                       std::hypot(static_cast<double>(snapshot.x - previous.x),
+                                                  static_cast<double>(snapshot.y - previous.y)));
+            previous = snapshot;
+        }
+
+        if (previous.trajectoryPhase < motion::paths::kTwoPi * 4.0 || maxStepDistance > 0.12)
+        {
+            std::cerr << "lissajous phase wrapped/snapped; phase " << previous.trajectoryPhase
+                      << ", max step " << maxStepDistance << '\n';
+            return 1;
+        }
+    }
+
+    // Lissajous physical deviations should also leave and return to the base route.
+    {
+        motion::Parameters parameters;
+        parameters.model = 6;
+        parameters.energy = 1.4;
+        parameters.motion = { 0.31, 0.44, 0.17, 0.56 };
+        parameters.globalDamping = 0.4;
+        parameters.audioKick = 0.0;
+        core.setParameters(parameters);
+        core.requestReset();
+        for (int i = 0; i < 120; ++i)
+            core.process(1.0 / 240.0, {});
+        core.triggerHit();
+        for (int i = 0; i < 18; ++i)
+            core.process(1.0 / 240.0, {});
+        if (lissajousDeviation(core.getSnapshot(), parameters) < 0.02)
+        {
+            std::cerr << "lissajous HIT did not create a physical deviation\n";
+            return 1;
+        }
+        for (int i = 0; i < 1600; ++i)
+            core.process(1.0 / 240.0, {});
+        if (lissajousDeviation(core.getSnapshot(), parameters) > 0.04)
+        {
+            std::cerr << "lissajous deviation did not settle back to route\n";
+            return 1;
         }
     }
 
