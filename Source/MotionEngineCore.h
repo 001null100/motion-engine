@@ -78,6 +78,7 @@ public:
         float impact = 0.0f;
         float audioEnvelope = 0.0f;
         float transient = 0.0f;
+        float trajectoryPhase = 0.0f;
         std::array<float, kNumZones> zones {};
         std::array<float, kNumOutputs> outputs {};
     };
@@ -105,13 +106,13 @@ public:
     static constexpr std::array<std::string_view, 10> modelDescriptions() noexcept
     {
         return {
-            "Driven elliptical orbit with shape and rotation control.",
+            "Exact elliptical trajectory; speed changes timing without bending the orbit.",
             "Elastic attraction to an offset anchor with optional swirl.",
             "Gravity-driven tether that can stretch naturally when thrown.",
             "Correlated random motion with inertia and directional bias.",
             "Smooth wandering current with soft wall avoidance.",
             "Ballistic motion with gravity, restitution and impact chaos.",
-            "Coupled oscillators tracing evolving geometric curves.",
+            "Exact coupled oscillators; the body lives directly on the displayed curve.",
             "HIT launches a damped back-and-forth vector impulse.",
             "HIT starts a shrinking orbital ring with controllable wobble.",
             "Stereo balance drives X; audio level and transients drive Y."
@@ -150,6 +151,7 @@ private:
         std::atomic<float> impact { 0.0f };
         std::atomic<float> audioEnvelope { 0.0f };
         std::atomic<float> transient { 0.0f };
+        std::atomic<float> trajectoryPhase { 0.0f };
         std::array<std::atomic<float>, kNumZones> zones {};
         std::array<std::atomic<float>, kNumOutputs> outputs {};
 
@@ -174,6 +176,7 @@ private:
     double sampleRate_ = 48000.0;
     double accumulator_ = 0.0;
     double elapsed_ = 0.0;
+    double trajectoryPhase_ = 0.0;
     int lastModel_ = -1;
 
     double x_ = 0.0;
