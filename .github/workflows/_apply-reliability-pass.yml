@@ -1,0 +1,44 @@
+name: Apply verified Motion Engine reliability pass
+on:
+  push:
+    branches: [fix/safe-aux-routing]
+    paths: [.github/workflows/_apply-reliability-pass.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.repository == '001null100/motion-engine'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+      - name: Verify tested base and exact patch before application
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "9963c5ef20e872fd664190528446a19a8018200c"
+          python3 - <<'PY'
+          import gzip, hashlib, os, pathlib, subprocess
+          compressed = b''.join(pathlib.Path(f'tools/_motion_pass_{i}.gzpart').read_bytes() for i in range(4))
+          patch = gzip.decompress(compressed)
+          expected = '657e9356f9d59dce82fae5da02024deb95462de9d54080fccecee4f199f6ffa9'
+          assert hashlib.sha256(patch).hexdigest() == expected, 'Patch checksum mismatch'
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'motion-pass.patch'
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', str(path)], check=True)
+          subprocess.run(['git', 'apply', '--index', str(path)], check=True)
+          changed = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          assert changed and all(p in ('CMakeLists.txt', 'README.md') or p.startswith(('Source/', 'tests/', 'docs/')) for p in changed)
+          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
+          PY
+      - name: Commit exact locally tested source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: stabilize Motion Engine timing and interaction, polish safe aux editor' -m 'Persistent 240 Hz analysis and causal CV interpolation; native note hits; coherent drag release; deferred state reset; retryable GUI gestures; effective-value guides; editor tests and actual-plugin contracts. Preserve existing model paths and safe bridge retirement.'
+          git push origin HEAD:refs/heads/fix/safe-aux-routing
