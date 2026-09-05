@@ -4,7 +4,7 @@ Motion Engine is a bespoke Windows CLAP plug-in that turns a stateful 2D physics
 
 Instead of drawing LFO curves, you throw a virtual Body into a motion model and use its position, velocity, energy, impacts, audio response, or proximity to Zones as modulation sources.
 
-## v2 beta
+## v2 beta / 0.2.1
 
 The current v2 build runs directly on [`null-clap`](https://github.com/001null100/null-clap). JUCE remains only as the drawing/window toolkit for the editor; the processor lifecycle, parameters, state, MIDI, audio ports and host integration are native CLAP.
 
@@ -19,6 +19,8 @@ The current v2 build runs directly on [`null-clap`](https://github.com/001null10
 - Native CLAP automation/modulation and remote-control pages.
 - Pure C++ physics core with lock-free atomic snapshot publication.
 - DPI-aware embedded editor, explicit constraint/model guides, and hardened discrete selector interaction.
+
+See `docs/MOTION_ENGINE_0_2_1.md` for the 0.2.1 timing, interaction and editor changes.
 
 ### Motion models
 
@@ -37,7 +39,7 @@ The current v2 build runs directly on [`null-clap`](https://github.com/001null10
 
 ### Safe modulation route
 
-Motion Engine exposes auxiliary output ports **Motion 1** through **Motion 8**. Each carries the corresponding Motion Output as a bipolar `-1..+1` control signal with sample-rate interpolation.
+Motion Engine exposes auxiliary output ports **Motion 1** through **Motion 8**. Each carries the corresponding Motion Output as a bipolar `-1..+1` control signal. Physics and audio analysis run on a persistent 240 Hz clock with causal sample-rate interpolation, independent of host buffer size. This is not sample-rate physics; the control tick, interpolation, and configured smoothing determine response time.
 
 For each target in Bitwig:
 
@@ -79,6 +81,6 @@ The rewrite deliberately separates the layers:
 
 The project uses C++20, CMake, `null-clap`, JUCE 9 for GUI only, and Java 21 for the Bitwig Controller Extension.
 
-GitHub Actions builds `MotionEngine.clap`, validates it with `clap-validator`, runs the deterministic model/constraint regression suite, verifies that the Bitwig bridge contains no `LastClickedParameter` target proxies, builds `MotionEngineBridge.bwextension`, and packages both. Pushes to `main` publish an automated v2 beta prerelease only after validation succeeds.
+GitHub Actions builds `MotionEngine.clap`, validates it with `clap-validator`, runs the deterministic model/constraint regression suite, verifies that the Bitwig bridge contains no `LastClickedParameter` target proxies, builds `MotionEngineBridge.bwextension`, and packages both. Main pushes and same-repository pull requests publish a v2 beta prerelease after the Windows tests, validator, bridge safety check and bridge build succeed. Linux validation and sanitizer checks run separately. The release includes the exact build checkout and SHA-256 hashes.
 
 See `docs/TESTING.md` for the current test pass. `docs/V1_ARCHITECTURE.md` documents the original JUCE/VST3 implementation for historical reference.

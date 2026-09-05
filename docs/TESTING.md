@@ -66,3 +66,17 @@ Add a second Motion Engine instance and route different Motion outputs from each
 ## What to report back
 
 The most useful report is concise: whether the old bridge-target menu entries are completely gone, whether Motion 1-8 routing works cleanly, any model/canvas regression, project reload behavior, and any Control Script Console errors or crashes.
+
+## 0.2.1 focused regression pass
+
+Read `MOTION_ENGINE_0_2_1.md` for automated coverage and timing details. In Bitwig,
+compare an audio-reactive lane at several buffer sizes, exercise native and raw
+note hits, and close the editor while holding the body. Edit an output percentage
+while audio runs, switch Zones while entering a radius, use FLIP on a reversed
+range, and resize the canvas while its trail is visible. Check H/Enter outside
+text fields, Escape during a canvas drag, and RESET without losing settings.
+
+A missing optional bridge is not an error. The footer reports MIDI note-hit
+activity, not arbitrary CC delivery. Motion 1-8 through Audio Rate remains the
+only supported target-routing workflow. Existing Orbit/Lissajous HIT and drag
+deviations must still leave and smoothly rejoin their reference paths.

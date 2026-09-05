@@ -86,7 +86,8 @@ public:
     MotionEngineCore();
 
     void prepare(double sampleRate) noexcept;
-    void setParameters(const Parameters& parameters) noexcept { parameters_ = parameters; }
+    // Audio-thread owned (or while inactive); never call from state/UI callbacks.
+    void setParameters(const Parameters& parameters) noexcept;
     void process(double blockSeconds, const AudioAnalysis& audio) noexcept;
     void requestReset() noexcept { resetPending_.store(true, std::memory_order_release); }
 
@@ -160,7 +161,7 @@ private:
     };
 
     void resetNow() noexcept;
-    void analyseAudio(const AudioAnalysis& input) noexcept;
+    void analyseAudio(const AudioAnalysis& input, double seconds) noexcept;
     void resetForModel(int model) noexcept;
     void step(double dt) noexcept;
     void applyGlobalForces(double dt) noexcept;
@@ -208,12 +209,17 @@ private:
 
     std::atomic<bool> resetPending_ { false };
     std::atomic<bool> hitPending_ { false };
-    std::atomic<bool> dragging_ { false };
-    std::atomic<float> dragX_ { 0.0f };
-    std::atomic<float> dragY_ { 0.0f };
-    std::atomic<bool> throwPending_ { false };
-    std::atomic<float> throwVX_ { 0.0f };
-    std::atomic<float> throwVY_ { 0.0f };
+    // A GUI gesture can begin and end between two simulation ticks. Publish the
+    // final position together with its release, rather than losing the whole drag.
+    struct DragMessage { float x=0, y=0, vx=0, vy=0; bool held=false; };
+    void publishDrag(const DragMessage& message) noexcept;
+    bool readDrag(DragMessage& message, std::uint64_t& revision) const noexcept;
+    std::atomic<std::uint64_t> dragRevision_ { 0 };
+    std::array<std::atomic<float>, 4> dragValues_ {};
+    std::atomic<bool> dragHeld_ { false };
+    DragMessage guiDrag_ {}; // Single GUI/main-thread producer only.
+    DragMessage audioDrag_ {}; // Audio-thread consumer only.
+    std::uint64_t consumedDragRevision_ = 0;
 
     AtomicSnapshot snapshot_;
     std::uint32_t randomState_ = 0x4d6f7469u;
