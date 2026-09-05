@@ -1,0 +1,34 @@
+name: Motion contract sanitizers
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: motion-contracts-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  contracts:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, RelWithDebInfo]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure actual plugin tests without the window toolkit
+        run: >-
+          cmake -S . -B build-contracts
+          -DMOTION_ENGINE_BUILD_PLUGIN=OFF -DBUILD_TESTING=ON
+          -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build-contracts --parallel 2
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-contracts --output-on-failure

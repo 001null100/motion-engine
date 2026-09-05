@@ -26,6 +26,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Record exact build source
+        shell: pwsh
+        run: |
+          git rev-parse HEAD | Out-File -Encoding utf8 BUILD_SOURCE.txt
+          git ls-files -s Source CMakeLists.txt | Out-File -Append -Encoding utf8 BUILD_SOURCE.txt
+
       - name: Set up Java 21
         uses: actions/setup-java@v5
         with:
@@ -42,9 +48,18 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release --parallel
 
-      - name: Test physics core
+      - name: Test physics, plugin contracts, editor and framework
         shell: pwsh
         run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Upload actual editor renders
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: MotionEngine-editor-Windows
+          path: build/MotionEngine-*.png
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Validate CLAP
         shell: pwsh
@@ -82,9 +97,16 @@ jobs:
           $clap = Get-ChildItem -Path build -Recurse -File -Filter "MotionEngine.clap" | Select-Object -First 1
           if (-not $clap) { throw "MotionEngine.clap was not produced" }
           Copy-Item $clap.FullName "$dist/MotionEngine.clap" -Force
-          Compress-Archive -Path "$dist/MotionEngine.clap" -DestinationPath "$dist/MotionEngine-Windows-CLAP.zip" -Force
           Copy-Item bridge/target/MotionEngineBridge.bwextension "$dist/MotionEngineBridge.bwextension"
           Copy-Item docs/TESTING.md "$dist/TESTING.md"
+          Copy-Item docs/MOTION_ENGINE_0_2_1.md "$dist/MOTION_ENGINE_0_2_1.md"
+          Copy-Item BUILD_SOURCE.txt "$dist/BUILD_SOURCE.txt"
+          Get-ChildItem $dist -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Out-File -Encoding utf8 "$dist/SHA256SUMS.txt"
+          Compress-Archive -Path "$dist/*" -DestinationPath "$PWD/MotionEngine-Windows-CLAP.zip" -Force
+          Move-Item "$PWD/MotionEngine-Windows-CLAP.zip" "$dist/MotionEngine-Windows-CLAP.zip" -Force
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
@@ -94,11 +116,26 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish v2 beta release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Publish validated beta release
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v2-beta-${{ github.run_number }}"
-          gh release create $tag dist/* --prerelease --target "${{ github.sha }}" --title "Motion Engine v2 beta ${{ github.run_number }}" --notes "Motion Engine v2 beta from ${{ github.sha }}. Safe Bitwig bridge v0.3 creates no public target proxies; modulation uses the eight bipolar Motion 1-8 CLAP auxiliary outputs through Bitwig Audio Rate. Native CLAP, physics tests, bridge safety gate, bridge build, and clap-validator all pass before publication."
+          if ("${{ github.event_name }}" -eq "pull_request") {
+            $tag = "v2-beta-pr${{ github.event.pull_request.number }}-${{ github.run_number }}"
+          } else {
+            $tag = "v2-beta-${{ github.run_number }}"
+          }
+          $target = git rev-parse HEAD
+          $notes = "Motion Engine 0.2.1 performance and editor pass. Exact tested checkout: $target. Persistent 240 Hz analysis/physics and causal sample-rate CV interpolation remove host-buffer-dependent modulation. Native CLAP note hits, coherent drag release, deferred state reset, retryable GUI edits and improved aux-output controls. The optional v0.3 bridge contains no public target proxies; use Motion 1-8 through Bitwig Audio Rate. Windows tests, bridge safety/build and clap-validator run before publication. Interactive Bitwig routing and DPI behavior still require verification. See MOTION_ENGINE_0_2_1.md and BUILD_SOURCE.txt."
+          gh release view $tag --json id 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag dist/* --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Release asset upload failed" }
+          } else {
+            gh release create $tag dist/* --prerelease --target $target --title "Motion Engine 0.2.1 / $tag" --notes $notes
+            if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }
+          }
