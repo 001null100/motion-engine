@@ -1,0 +1,56 @@
+name: Linux native validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: motion-engine-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxrender-dev libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev xvfb
+      - name: Configure native CLAP and tests
+        run: cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build-linux --parallel 2
+      - name: Test physics and framework contracts
+        run: ctest --test-dir build-linux --output-on-failure
+      - name: Validate Linux CLAP
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 "https://github.com/free-audio/clap-validator/releases/download/0.4.1/clap-validator-0.4.1-127-g152b982-ubuntu-22.04.zip" -o validator.zip
+          unzip -q validator.zip -d validator-package
+          ARCHIVE="$(find validator-package -type f -name '*.tar.gz' -print -quit)"
+          test -n "$ARCHIVE"
+          mkdir -p validator
+          tar -xzf "$ARCHIVE" -C validator
+          VALIDATOR="$(find validator -type f -name 'clap-validator' -print -quit)"
+          test -n "$VALIDATOR"
+          chmod +x "$VALIDATOR"
+          xvfb-run -a "$VALIDATOR" validate build-linux/clap/MotionEngine.clap --only-failed
+      - name: Package validated module
+        run: |
+          mkdir -p dist
+          tar -czf dist/MotionEngine-Linux-CLAP.tar.gz -C build-linux/clap MotionEngine.clap
+      - name: Upload validated module
+        uses: actions/upload-artifact@v4
+        with:
+          name: MotionEngine-Linux-CLAP
+          path: dist/MotionEngine-Linux-CLAP.tar.gz
+          if-no-files-found: error
+          retention-days: 14
