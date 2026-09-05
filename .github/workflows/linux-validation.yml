@@ -19,16 +19,35 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Record exact source provenance
+        run: |
+          git rev-parse HEAD | tee BUILD_SOURCE.txt
+          git ls-files -s Source CMakeLists.txt >> BUILD_SOURCE.txt
+          git archive --format=tar.gz -o MotionEngine-build-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MotionEngine-build-source
+          path: |
+            MotionEngine-build-source.tar.gz
+            BUILD_SOURCE.txt
+          retention-days: 14
       - name: Install GUI build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxrender-dev libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev xvfb
+          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxi-dev libxinerama-dev libxrandr-dev libxcursor-dev libxrender-dev libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev xvfb
       - name: Configure native CLAP and tests
         run: cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      - name: Archive exact dependencies for reproducible tests
+        run: tar --exclude=.git -czf MotionEngine-build-dependencies.tar.gz -C build-linux/_deps null_clap-src clap-src clap_helpers-src juce-src
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MotionEngine-build-dependencies
+          path: MotionEngine-build-dependencies.tar.gz
+          retention-days: 14
       - name: Build
         run: cmake --build build-linux --parallel 2
       - name: Test physics and framework contracts
-        run: ctest --test-dir build-linux --output-on-failure
+        run: xvfb-run -a ctest --test-dir build-linux --output-on-failure
       - name: Validate Linux CLAP
         shell: bash
         run: |
