@@ -1,5 +1,7 @@
 #include "MotionEnginePlugin.hpp"
+#ifndef MOTION_ENGINE_HEADLESS_TEST
 #include "JuceGuiDelegate.hpp"
+#endif
 
 #include <clap/events.h>
 #include <clap/plugin-features.h>
@@ -54,7 +56,7 @@ const clap_plugin_descriptor_t& MotionEnginePlugin::descriptor() noexcept
         "https://github.com/001null100/motion-engine",
         "",
         "",
-        "0.2.0",
+        "0.2.1",
         "Physics-driven modulation engine",
         features,
     };
@@ -67,9 +69,13 @@ MotionEnginePlugin::MotionEnginePlugin(const clap_host_t* host)
     registerParameters();
     registerPorts();
     registerRemoteControls();
+#ifndef MOTION_ENGINE_HEADLESS_TEST
     setGuiDelegate(std::make_unique<JuceGuiDelegate>(*this));
+#endif
     core_.setParameters(readCoreParameters());
+#ifndef MOTION_ENGINE_HEADLESS_TEST
     bridge_.start();
+#endif
 }
 
 double MotionEnginePlugin::parameterValue(clap_id id) const noexcept
@@ -148,7 +154,8 @@ void MotionEnginePlugin::registerPorts()
         audioPorts().addOutput(nullclap::AudioPortSpec::mono(
             motion::ids::modulationOutputs[static_cast<std::size_t>(i)], outputModule(i)));
 
-    notePorts().addInput(nullclap::NotePortSpec::midi(motion::ids::midiInput, "Motion MIDI"));
+    notePorts().addInput(nullclap::NotePortSpec::dialects(motion::ids::midiInput, "Motion MIDI",
+        CLAP_NOTE_DIALECT_MIDI | CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI));
 }
 
 void MotionEnginePlugin::registerRemoteControls()
@@ -183,22 +190,31 @@ void MotionEnginePlugin::registerRemoteControls()
 
 bool MotionEnginePlugin::onActivate(double sampleRate, std::uint32_t, std::uint32_t) noexcept
 {
-    sampleRate_ = std::max(1.0, sampleRate);
+    if (!std::isfinite(sampleRate) || sampleRate < 1000.0 || sampleRate > 768000.0) return false;
+    sampleRate_=sampleRate;
+    resetRequested_.store(false, std::memory_order_release);
+    resetControlState();
+    return true;
+}
+
+void MotionEnginePlugin::onReset() noexcept { resetRequested_.store(true, std::memory_order_release); }
+
+bool MotionEnginePlugin::loadExtraState(std::span<const std::byte> bytes)
+{
+    if (!bytes.empty()) return false; // Existing NCLP v1 states have no opaque payload.
+    // Only the audio thread owns core parameters/history. CLAP state load runs on
+    // the main thread and may overlap processing, so publish a request instead.
+    resetMotionFromUi();
+    return true;
+}
+
+void MotionEnginePlugin::resetControlState() noexcept
+{
     core_.setParameters(readCoreParameters());
     core_.prepare(sampleRate_);
-    return true;
-}
-
-void MotionEnginePlugin::onReset() noexcept
-{
-    core_.requestReset();
-}
-
-bool MotionEnginePlugin::loadExtraState(std::span<const std::byte>)
-{
-    core_.setParameters(readCoreParameters());
-    core_.requestReset();
-    return true;
+    cvStart_=cvTarget_=core_.getOutputs();
+    controlPhase_=leftSquares_=rightSquares_=0.0;
+    analysisFrames_=0; analysisChannels_=0;
 }
 
 motion::Parameters MotionEnginePlugin::readCoreParameters() const noexcept
@@ -240,143 +256,164 @@ motion::Parameters MotionEnginePlugin::readCoreParameters() const noexcept
     return result;
 }
 
-motion::AudioAnalysis MotionEnginePlugin::analyseSpan(const clap_process_t& process,
-                                                       std::uint32_t startFrame,
-                                                       std::uint32_t endFrame) const noexcept
+namespace
 {
-    motion::AudioAnalysis result;
-    if (startFrame >= endFrame || process.audio_inputs_count == 0)
-        return result;
-
-    const auto& input = process.audio_inputs[0];
-    const auto frames = endFrame - startFrame;
-    result.channels = static_cast<int>(input.channel_count);
-    if (input.channel_count == 0)
-        return result;
-
-    double totalSquares = 0.0;
-    double leftSquares = 0.0;
-    double rightSquares = 0.0;
-    for (std::uint32_t channel = 0; channel < input.channel_count; ++channel)
-    {
-        double channelSquares = 0.0;
-        if (input.data32 != nullptr && input.data32[channel] != nullptr)
-        {
-            const float* data = input.data32[channel];
-            for (std::uint32_t frame = startFrame; frame < endFrame; ++frame)
-                channelSquares += static_cast<double>(data[frame]) * static_cast<double>(data[frame]);
-        }
-        else if (input.data64 != nullptr && input.data64[channel] != nullptr)
-        {
-            const double* data = input.data64[channel];
-            for (std::uint32_t frame = startFrame; frame < endFrame; ++frame)
-                channelSquares += data[frame] * data[frame];
-        }
-        totalSquares += channelSquares;
-        if (channel == 0) leftSquares = channelSquares;
-        if (channel == 1) rightSquares = channelSquares;
-    }
-
-    result.rms = std::sqrt(totalSquares / std::max(1.0, static_cast<double>(frames) * input.channel_count));
-    result.leftRms = std::sqrt(leftSquares / std::max(1.0, static_cast<double>(frames)));
-    result.rightRms = input.channel_count > 1
-        ? std::sqrt(rightSquares / std::max(1.0, static_cast<double>(frames)))
-        : result.leftRms;
-    return result;
+double inputSample(const clap_audio_buffer_t* input, std::uint32_t channel, std::uint32_t frame) noexcept
+{
+    if (input==nullptr || channel>=input->channel_count) return 0.0;
+    if (input->data32!=nullptr && input->data32[channel]!=nullptr) return input->data32[channel][frame];
+    if (input->data64!=nullptr && input->data64[channel]!=nullptr) return input->data64[channel][frame];
+    return 0.0;
+}
 }
 
-void MotionEnginePlugin::copyMainAudio(const clap_process_t& process,
-                                       std::uint32_t startFrame,
-                                       std::uint32_t endFrame) noexcept
+void MotionEnginePlugin::copyMainAudio(const clap_process_t& process, std::uint32_t start, std::uint32_t end) noexcept
 {
-    if (process.audio_outputs_count == 0 || startFrame >= endFrame)
-        return;
-    auto& output = process.audio_outputs[0];
-    const clap_audio_buffer_t* input = process.audio_inputs_count > 0 ? &process.audio_inputs[0] : nullptr;
-
-    for (std::uint32_t channel = 0; channel < output.channel_count; ++channel)
-    {
-        if (output.data32 != nullptr && output.data32[channel] != nullptr)
+    if (process.audio_outputs==nullptr || process.audio_outputs_count==0) return;
+    auto& output=process.audio_outputs[0];
+    output.constant_mask=0;
+    const auto* input=process.audio_inputs!=nullptr && process.audio_inputs_count>0?&process.audio_inputs[0]:nullptr;
+    for (std::uint32_t channel=0; channel<output.channel_count; ++channel)
+        for (std::uint32_t frame=start; frame<end; ++frame)
         {
-            float* destination = output.data32[channel];
-            const float* source = input != nullptr && input->data32 != nullptr && channel < input->channel_count
-                ? input->data32[channel] : nullptr;
-            if (source == destination)
-                continue;
-            for (std::uint32_t frame = startFrame; frame < endFrame; ++frame)
-                destination[frame] = source != nullptr ? source[frame] : 0.0f;
+            const double value=inputSample(input,channel,frame);
+            if (output.data32!=nullptr && output.data32[channel]!=nullptr) output.data32[channel][frame]=static_cast<float>(value);
+            else if (output.data64!=nullptr && output.data64[channel]!=nullptr) output.data64[channel][frame]=value;
         }
-        else if (output.data64 != nullptr && output.data64[channel] != nullptr)
-        {
-            double* destination = output.data64[channel];
-            const double* source = input != nullptr && input->data64 != nullptr && channel < input->channel_count
-                ? input->data64[channel] : nullptr;
-            if (source == destination)
-                continue;
-            for (std::uint32_t frame = startFrame; frame < endFrame; ++frame)
-                destination[frame] = source != nullptr ? source[frame] : 0.0;
-        }
-    }
 }
 
-void MotionEnginePlugin::writeModulationOutputs(const clap_process_t& process,
-                                                 std::uint32_t startFrame,
-                                                 std::uint32_t endFrame,
-                                                 const std::array<float, motion::kNumOutputs>& start,
-                                                 const std::array<float, motion::kNumOutputs>& end) noexcept
+void MotionEnginePlugin::processAudio(const clap_process_t& process, std::uint32_t start, std::uint32_t end) noexcept
 {
-    if (startFrame >= endFrame)
-        return;
-    const auto frames = endFrame - startFrame;
-    for (int index = 0; index < motion::kNumOutputs; ++index)
-    {
-        const auto port = static_cast<std::uint32_t>(index + 1);
-        if (port >= process.audio_outputs_count)
-            break;
-        auto& output = process.audio_outputs[port];
-        if (output.channel_count == 0)
-            continue;
-
-        for (std::uint32_t frame = startFrame; frame < endFrame; ++frame)
-        {
-            const float t = frames > 1
-                ? static_cast<float>(frame - startFrame) / static_cast<float>(frames - 1) : 1.0f;
-            const float normalized = start[static_cast<std::size_t>(index)]
-                                   + (end[static_cast<std::size_t>(index)] - start[static_cast<std::size_t>(index)]) * t;
-            const float bipolar = normalized * 2.0f - 1.0f;
-            if (output.data32 != nullptr && output.data32[0] != nullptr)
-                output.data32[0][frame] = bipolar;
-            else if (output.data64 != nullptr && output.data64[0] != nullptr)
-                output.data64[0][frame] = static_cast<double>(bipolar);
-        }
-    }
-}
-
-void MotionEnginePlugin::processAudio(const clap_process_t& process,
-                                      std::uint32_t startFrame,
-                                      std::uint32_t endFrame) noexcept
-{
-    if (startFrame >= endFrame)
-        return;
-
+    if (start>=end) return;
+    if (resetRequested_.exchange(false, std::memory_order_acq_rel)) resetControlState();
+    if (hitRequested_.exchange(false,std::memory_order_acq_rel)) core_.triggerHit();
     core_.setParameters(readCoreParameters());
-    const auto previousOutputs = core_.getOutputs();
-    const auto audio = analyseSpan(process, startFrame, endFrame);
-    core_.process(static_cast<double>(endFrame - startFrame) / sampleRate_, audio);
-    const auto currentOutputs = core_.getOutputs();
+    copyMainAudio(process,start,end);
+    const auto* input=process.audio_inputs!=nullptr && process.audio_inputs_count>0?&process.audio_inputs[0]:nullptr;
+    const auto outputCount=process.audio_outputs!=nullptr?std::min<std::uint32_t>(process.audio_outputs_count,9):0;
+    for (std::uint32_t port=1; port<outputCount; ++port) process.audio_outputs[port].constant_mask=0;
 
-    copyMainAudio(process, startFrame, endFrame);
-    writeModulationOutputs(process, startFrame, endFrame, previousOutputs, currentOutputs);
+    constexpr double controlHz=240.0;
+    for (std::uint32_t frame=start; frame<end; ++frame)
+    {
+        const float fraction=static_cast<float>(controlPhase_/sampleRate_);
+        for (std::uint32_t port=1; port<outputCount; ++port)
+        {
+            auto& output=process.audio_outputs[port];
+            const auto i=static_cast<std::size_t>(port-1);
+            const float normalized=cvStart_[i]+(cvTarget_[i]-cvStart_[i])*fraction;
+            const float value=std::clamp(normalized*2.0f-1.0f,-1.0f,1.0f);
+            if (output.channel_count==0) continue;
+            if (output.data32!=nullptr && output.data32[0]!=nullptr) output.data32[0][frame]=value;
+            else if (output.data64!=nullptr && output.data64[0]!=nullptr) output.data64[0][frame]=value;
+        }
+        const auto clean=[](double value){return std::isfinite(value)?std::clamp(value,-1.0e6,1.0e6):0.0;};
+        const double left=clean(inputSample(input,0,frame));
+        const double right=input!=nullptr && input->channel_count>1?clean(inputSample(input,1,frame)):left;
+        leftSquares_+=left*left; rightSquares_+=right*right; ++analysisFrames_;
+        if (input!=nullptr) analysisChannels_=std::max(analysisChannels_,static_cast<int>(std::min(input->channel_count,2u)));
+        controlPhase_+=controlHz;
+        if (controlPhase_>=sampleRate_)
+        {
+            controlPhase_-=sampleRate_;
+            motion::AudioAnalysis audio;
+            audio.channels=analysisChannels_;
+            audio.leftRms=std::sqrt(leftSquares_/analysisFrames_);
+            audio.rightRms=std::sqrt(rightSquares_/analysisFrames_);
+            audio.rms=std::sqrt((leftSquares_+rightSquares_)/(2.0*analysisFrames_));
+            core_.process(1.0/controlHz,audio);
+            cvStart_=cvTarget_; cvTarget_=core_.getOutputs();
+            leftSquares_=rightSquares_=0.0; analysisFrames_=0; analysisChannels_=0;
+        }
+    }
 }
 
 void MotionEnginePlugin::onEvent(const clap_event_header_t& event) noexcept
 {
-    if (event.space_id != CLAP_CORE_EVENT_SPACE_ID || event.type != CLAP_EVENT_MIDI
-        || event.size < sizeof(clap_event_midi_t))
-        return;
+    if (event.space_id!=CLAP_CORE_EVENT_SPACE_ID) return;
+    int key=-1, channel=-1;
+    if (event.type==CLAP_EVENT_MIDI && event.size>=sizeof(clap_event_midi_t))
+    {
+        const auto& midi=reinterpret_cast<const clap_event_midi_t&>(event);
+        if (midi.port_index!=0 || (midi.data[0]&0xf0u)!=0x90u || midi.data[1]>127
+            || midi.data[2]==0 || midi.data[2]>127) return;
+        key=midi.data[1]; channel=(midi.data[0]&0x0fu)+1;
+    }
+    else if (event.type==CLAP_EVENT_NOTE_ON && event.size>=sizeof(clap_event_note_t))
+    {
+        const auto& note=reinterpret_cast<const clap_event_note_t&>(event);
+        if (note.port_index!=0 || note.key<0 || note.key>127 || note.channel<0 || note.channel>15
+            || note.note_id < -1 || !std::isfinite(note.velocity) || note.velocity<0 || note.velocity>1) return;
+        key=note.key; channel=note.channel+1; // Native velocity zero remains an onset.
+    }
+    else return;
+    // Apply a pending reset before the hit so the first note after state restore
+    // or host reset is not erased when the next audio span begins.
+    if (resetRequested_.exchange(false, std::memory_order_acq_rel)) resetControlState();
+    core_.triggerHit();
+    midiHits_.fetch_add(1,std::memory_order_relaxed);
+    lastMidi_.store(static_cast<std::uint32_t>(key|(channel<<8)),std::memory_order_release);
+}
 
-    const auto& midi = reinterpret_cast<const clap_event_midi_t&>(event);
-    const std::uint8_t status = midi.data[0] & 0xf0u;
-    if (status == 0x90u && midi.data[2] != 0)
-        core_.triggerHit();
+int MotionEnginePlugin::effectiveParameterInt(clap_id id) const noexcept
+{
+    return static_cast<int>(std::llround(parameters().effectiveValue(id)));
+}
+
+void MotionEnginePlugin::hitFromUi() noexcept { hitRequested_.store(true,std::memory_order_release); _host.requestProcess(); }
+void MotionEnginePlugin::resetMotionFromUi() noexcept { onReset(); _host.requestProcess(); }
+
+std::string MotionEnginePlugin::midiActivityText() const
+{
+    const auto count=midiHits_.load(std::memory_order_relaxed);
+    if (count==0) return "MIDI: no note hits received";
+    const auto last=lastMidi_.load(std::memory_order_acquire);
+    return "MIDI: note "+std::to_string(last&127u)+" / CH "+std::to_string(last>>8)
+        +" / hits "+std::to_string(count);
+}
+
+MotionEnginePlugin::UiEdit* MotionEnginePlugin::uiEdit(clap_id id) noexcept
+{
+    if (!parameters().contains(id) || parameters().isReadOnly(id)) return nullptr;
+    for (auto& edit:uiEdits_) if (edit.id==id) return &edit;
+    for (auto& edit:uiEdits_) if (edit.id==CLAP_INVALID_ID) { edit.id=id; return &edit; }
+    return nullptr;
+}
+void MotionEnginePlugin::beginUiEdit(clap_id id) noexcept
+{
+    if (auto* edit=uiEdit(id)) { edit->active=true; edit->end=false; }
+    serviceUiEdits();
+}
+void MotionEnginePlugin::setUiValue(clap_id id, double value) noexcept
+{
+    if (!std::isfinite(value)) return;
+    if (auto* edit=uiEdit(id)) { edit->active=edit->hasValue=true; edit->value=value; }
+    serviceUiEdits();
+}
+void MotionEnginePlugin::endUiEdit(clap_id id) noexcept
+{
+    if (auto* edit=uiEdit(id)) edit->end=true;
+    serviceUiEdits();
+}
+void MotionEnginePlugin::setUiValueOnce(clap_id id, double value) noexcept
+{
+    beginUiEdit(id); setUiValue(id,value); endUiEdit(id);
+}
+void MotionEnginePlugin::serviceUiEdits() noexcept
+{
+    for (auto& edit:uiEdits_)
+    {
+        if (!edit.active) continue;
+        if (!edit.began) { if (!beginParameterGesture(edit.id)) { requestUiService(); return; } edit.began=true; }
+        if (edit.hasValue) { if (!setParameterFromGui(edit.id,edit.value)) { requestUiService(); return; } edit.hasValue=false; markStateDirty(); }
+        if (edit.end) { if (!endParameterGesture(edit.id)) { requestUiService(); return; } edit.active=edit.began=false; }
+    }
+}
+void MotionEnginePlugin::requestUiService() noexcept
+{
+    if (!uiServiceRequested_.exchange(true,std::memory_order_acq_rel)) _host.requestCallback();
+}
+void MotionEnginePlugin::onMainThreadCallback() noexcept
+{
+    uiServiceRequested_.store(false,std::memory_order_release); serviceUiEdits();
 }

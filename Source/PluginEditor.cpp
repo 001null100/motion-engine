@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "EditorBindings.h"
 
 #include <algorithm>
 #include <cmath>
@@ -63,6 +64,9 @@ void styleButton(juce::TextButton& button, juce::Colour colour)
 MotionCanvas::MotionCanvas(MotionEnginePlugin& plugin) : plugin_(plugin)
 {
     setMouseCursor(juce::MouseCursor::CrosshairCursor);
+    setWantsKeyboardFocus(true);
+    setTitle("Motion canvas");
+    trail_.reserve(37);
 }
 
 juce::Rectangle<float> MotionCanvas::worldBounds() const
@@ -124,7 +128,7 @@ void MotionCanvas::paint(juce::Graphics& g)
     g.drawLine(centre.x, world.getY(), centre.x, world.getBottom(), 1.2f);
     g.drawLine(world.getX(), centre.y, world.getRight(), centre.y, 1.2f);
 
-    const int constraint = plugin_.parameterInt(motion::ids::constraint);
+    const int constraint = plugin_.effectiveParameterInt(motion::ids::constraint);
     g.setColour(accent.withAlpha(0.25f));
     if (constraint == 1)
     {
@@ -147,15 +151,15 @@ void MotionCanvas::paint(juce::Graphics& g)
     }
 
     const auto snapshot = plugin_.motionCore().getSnapshot();
-    const int model = plugin_.parameterInt(motion::ids::model);
+    const int model = plugin_.effectiveParameterInt(motion::ids::model);
 
     for (int zone = 0; zone < motion::kNumZones; ++zone)
     {
         const auto& id = motion::ids::zones[static_cast<std::size_t>(zone)];
-        const float zx = static_cast<float>(plugin_.parameterValue(id.x));
-        const float zy = static_cast<float>(plugin_.parameterValue(id.y));
-        const float radius = static_cast<float>(plugin_.parameterValue(id.radius));
-        const float falloff = std::max(0.1f, static_cast<float>(plugin_.parameterValue(id.falloff)));
+        const float zx = static_cast<float>(plugin_.effectiveParameterValue(id.x));
+        const float zy = static_cast<float>(plugin_.effectiveParameterValue(id.y));
+        const float radius = static_cast<float>(plugin_.effectiveParameterValue(id.radius));
+        const float falloff = std::max(0.1f, static_cast<float>(plugin_.effectiveParameterValue(id.falloff)));
         const auto center = worldToScreen(zx, zy);
         const float pixels = worldRadiusToPixels(radius);
         const auto ellipse = juce::Rectangle<float>(center.x - pixels, center.y - pixels, pixels * 2.0f, pixels * 2.0f);
@@ -183,7 +187,7 @@ void MotionCanvas::paint(juce::Graphics& g)
 
     if (model == 1)
     {
-        const float anchorX = (static_cast<float>(plugin_.parameterValue(motion::ids::motionD)) - 0.5f) * 0.9f;
+        const float anchorX = (static_cast<float>(plugin_.effectiveParameterValue(motion::ids::motionD)) - 0.5f) * 0.9f;
         const auto anchor = worldToScreen(anchorX, 0.0f);
         const auto body = worldToScreen(snapshot.x, snapshot.y);
         g.setColour(accent.withAlpha(0.42f));
@@ -205,7 +209,9 @@ void MotionCanvas::paint(juce::Graphics& g)
         {
             const float t = static_cast<float>(i) / static_cast<float>(trail_.size() - 1);
             g.setColour(accent.withAlpha(0.025f + 0.62f * t * t));
-            g.drawLine(trail_[i - 1].x, trail_[i - 1].y, trail_[i].x, trail_[i].y, 0.8f + 1.8f * t);
+            const auto previous=worldToScreen(trail_[i-1].x,trail_[i-1].y);
+            const auto current=worldToScreen(trail_[i].x,trail_[i].y);
+            g.drawLine(previous.x,previous.y,current.x,current.y,0.8f+1.8f*t);
         }
     }
 
@@ -240,8 +246,11 @@ void MotionCanvas::paint(juce::Graphics& g)
 void MotionCanvas::tick()
 {
     const auto snapshot = plugin_.motionCore().getSnapshot();
-    const auto point = worldToScreen(snapshot.x, snapshot.y);
-    if (trail_.empty() || trail_.back().getDistanceFrom(point) > 0.75f)
+    const int model=plugin_.effectiveParameterInt(motion::ids::model);
+    const int constraint=plugin_.effectiveParameterInt(motion::ids::constraint);
+    if(model!=trailModel_||constraint!=trailConstraint_) { trail_.clear();trailModel_=model;trailConstraint_=constraint; }
+    const juce::Point<float> point { snapshot.x, snapshot.y };
+    if (trail_.empty() || trail_.back().getDistanceFrom(point) > 1.5f/worldBounds().getWidth())
         trail_.push_back(point);
     constexpr std::size_t maxTrailPoints = 36;
     if (trail_.size() > maxTrailPoints)
@@ -257,7 +266,7 @@ void MotionCanvas::setSelectedZone(int zone)
 
 void MotionCanvas::setParameter(clap_id id, double value)
 {
-    plugin_.setParameterFromGui(id, value);
+    plugin_.setUiValue(id, value);
 }
 
 void MotionCanvas::beginZoneGesture()
@@ -267,12 +276,12 @@ void MotionCanvas::beginZoneGesture()
     const auto& id = motion::ids::zones[static_cast<std::size_t>(dragZone_)];
     if (dragMode_ == DragMode::zoneMove)
     {
-        plugin_.beginParameterGesture(id.x);
-        plugin_.beginParameterGesture(id.y);
+        plugin_.beginUiEdit(id.x);
+        plugin_.beginUiEdit(id.y);
     }
     else if (dragMode_ == DragMode::zoneRadius)
     {
-        plugin_.beginParameterGesture(id.radius);
+        plugin_.beginUiEdit(id.radius);
     }
 }
 
@@ -283,17 +292,20 @@ void MotionCanvas::endZoneGesture()
     const auto& id = motion::ids::zones[static_cast<std::size_t>(dragZone_)];
     if (dragMode_ == DragMode::zoneMove)
     {
-        plugin_.endParameterGesture(id.x);
-        plugin_.endParameterGesture(id.y);
+        plugin_.endUiEdit(id.x);
+        plugin_.endUiEdit(id.y);
     }
     else if (dragMode_ == DragMode::zoneRadius)
     {
-        plugin_.endParameterGesture(id.radius);
+        plugin_.endUiEdit(id.radius);
     }
 }
 
 void MotionCanvas::mouseDown(const juce::MouseEvent& event)
 {
+    if(!event.mods.isLeftButtonDown() || !worldBounds().contains(event.position)) return;
+    cancelInteraction();
+    grabKeyboardFocus();
     const auto mouse = event.position;
     const auto snapshot = plugin_.motionCore().getSnapshot();
     const auto body = worldToScreen(snapshot.x, snapshot.y);
@@ -359,19 +371,36 @@ void MotionCanvas::mouseDrag(const juce::MouseEvent& event)
     }
 }
 
-void MotionCanvas::mouseUp(const juce::MouseEvent&)
+void MotionCanvas::mouseUp(const juce::MouseEvent& event)
 {
     if (dragMode_ == DragMode::body)
-        plugin_.motionCore().endDrag(flickVelocity_.x, flickVelocity_.y);
+    {
+        const auto release=screenToWorld(event.position);
+        plugin_.motionCore().dragTo(release.x,release.y);
+        // A flick followed by a stationary hold is a placement, not a stale throw.
+        const auto idle=juce::Time::getMillisecondCounterHiRes()-lastDragTimeMs_;
+        const float decay=idle>150.0?0.0f:static_cast<float>(std::exp(-std::max(0.0,idle)/60.0));
+        plugin_.motionCore().endDrag(flickVelocity_.x*decay,flickVelocity_.y*decay);
+    }
     else
         endZoneGesture();
     dragMode_ = DragMode::none;
     dragZone_ = -1;
 }
 
-void MotionCanvas::mouseDoubleClick(const juce::MouseEvent&)
+void MotionCanvas::mouseDoubleClick(const juce::MouseEvent& event)
 {
-    plugin_.motionCore().triggerHit();
+    if (!event.mods.isLeftButtonDown()) return;
+    cancelInteraction();
+    plugin_.hitFromUi();
+}
+
+MotionCanvas::~MotionCanvas() { cancelInteraction(); }
+void MotionCanvas::cancelInteraction()
+{
+    if(dragMode_==DragMode::body) plugin_.motionCore().endDrag(0,0);
+    else endZoneGesture();
+    dragMode_=DragMode::none; dragZone_=-1; flickVelocity_={};
 }
 
 //==============================================================================
@@ -384,8 +413,14 @@ OutputStrip::OutputStrip(MotionEnginePlugin& plugin, int index) : plugin_(plugin
 
     styleCombo(sourceBox_);
     styleCombo(curveBox_);
-    styleButton(mapButton_, accent);
-    styleButton(clearButton_, accent2);
+    auxLabel_.setText("AUX " + juce::String(index_ + 1),juce::dontSendNotification);
+    auxLabel_.setJustificationType(juce::Justification::centred);
+    auxLabel_.setColour(juce::Label::textColourId,accent);
+    auxLabel_.setFont(juce::FontOptions(11.0f,juce::Font::bold));
+    auxLabel_.setInterceptsMouseClicks(false,false);
+    styleButton(invertButton_,accent2);
+    invertButton_.setWantsKeyboardFocus(false);
+    invertButton_.setTooltip("Swap minimum and maximum to invert this output's range.");
 
     int item = 1;
     for (const auto name : motion::MotionEngineCore::sourceNames())
@@ -418,7 +453,7 @@ OutputStrip::OutputStrip(MotionEnginePlugin& plugin, int index) : plugin_(plugin
     for (auto* component : { static_cast<juce::Component*>(&indexLabel_), static_cast<juce::Component*>(&sourceBox_),
                              static_cast<juce::Component*>(&minSlider_), static_cast<juce::Component*>(&maxSlider_),
                              static_cast<juce::Component*>(&curveBox_), static_cast<juce::Component*>(&smoothSlider_),
-                             static_cast<juce::Component*>(&mapButton_), static_cast<juce::Component*>(&clearButton_),
+                             static_cast<juce::Component*>(&auxLabel_), static_cast<juce::Component*>(&invertButton_),
                              static_cast<juce::Component*>(&targetLabel_) })
         addAndMakeVisible(component);
 
@@ -439,8 +474,21 @@ OutputStrip::OutputStrip(MotionEnginePlugin& plugin, int index) : plugin_(plugin
     bindSlider(maxSlider_, id.maximum);
     bindSlider(smoothSlider_, id.smoothing);
 
-    mapButton_.onClick = [this] { plugin_.bridge().requestMap(index_); };
-    clearButton_.onClick = [this] { plugin_.bridge().requestUnmap(index_); };
+    const auto title="Output "+juce::String(index_+1);
+    sourceBox_.setTitle(title+" source");curveBox_.setTitle(title+" curve");
+    minSlider_.setTitle(title+" minimum");maxSlider_.setTitle(title+" maximum");smoothSlider_.setTitle(title+" smoothing");
+    motion::ui::percent(minSlider_);motion::ui::percent(maxSlider_);
+    minSlider_.setTooltip("Minimum output percentage. Minimum may exceed maximum for an inverted range.");
+    maxSlider_.setTooltip("Maximum output percentage. CLAP values remain normalized 0..1.");
+    smoothSlider_.setTooltip("Output smoothing in milliseconds, independent of the DAW buffer size. Double-click resets.");
+    sourceBox_.setTooltip("Choose a motion or audio source for this auxiliary output.");
+    curveBox_.setTooltip("Shape the source before range and smoothing are applied.");
+    auxLabel_.setTooltip("Use Motion "+juce::String(index_+1)+" as the Bitwig Audio Rate source. Rectify off. Do not monitor CV as audio.");
+    invertButton_.onClick=[this,id]{
+        motion::ui::finish(minSlider_);motion::ui::finish(maxSlider_);
+        const auto lo=plugin_.parameterValue(id.minimum),hi=plugin_.parameterValue(id.maximum);
+        setOneShot(id.minimum,hi);setOneShot(id.maximum,lo);
+    };
 }
 
 void OutputStrip::configureCompactSlider(juce::Slider& slider)
@@ -455,20 +503,18 @@ void OutputStrip::configureCompactSlider(juce::Slider& slider)
 
 void OutputStrip::setOneShot(clap_id id, double value)
 {
-    plugin_.beginParameterGesture(id);
-    plugin_.setParameterFromGui(id, value);
-    plugin_.endParameterGesture(id);
+    plugin_.beginUiEdit(id);
+    plugin_.setUiValue(id, value);
+    plugin_.endUiEdit(id);
 }
 
 void OutputStrip::bindSlider(juce::Slider& slider, clap_id id)
 {
-    slider.onDragStart = [this, id] { plugin_.beginParameterGesture(id); };
-    slider.onValueChange = [this, &slider, id]
-    {
-        if (!syncing_)
-            plugin_.setParameterFromGui(id, slider.getValue());
-    };
-    slider.onDragEnd = [this, id] { plugin_.endParameterGesture(id); };
+    motion::ui::bind(plugin_,slider,[id]{return id;},syncing_);
+}
+OutputStrip::~OutputStrip()
+{
+    for(auto* slider:{&minSlider_,&maxSlider_,&smoothSlider_})motion::ui::detach(*slider);
 }
 
 void OutputStrip::paint(juce::Graphics& g)
@@ -491,19 +537,19 @@ void OutputStrip::resized()
 {
     auto area = getLocalBounds().reduced(8, 5);
     indexLabel_.setBounds(area.removeFromLeft(24));
-    auto top = area.removeFromTop(28);
+    auto top = area.removeFromTop(24);
     sourceBox_.setBounds(top.removeFromLeft(142).reduced(2, 1));
     minSlider_.setBounds(top.removeFromLeft(66).reduced(2, 1));
     maxSlider_.setBounds(top.removeFromLeft(66).reduced(2, 1));
-    clearButton_.setBounds(top.removeFromRight(28).reduced(2, 1));
-    mapButton_.setBounds(top.removeFromRight(56).reduced(2, 1));
-    auto bottom = area.removeFromBottom(27);
+    auxLabel_.setBounds(top.removeFromRight(55).reduced(1));
+    invertButton_.setBounds(top.removeFromRight(40).reduced(1));
+    auto bottom = area.removeFromBottom(23);
     curveBox_.setBounds(bottom.removeFromLeft(108).reduced(2, 1));
     smoothSlider_.setBounds(bottom.removeFromLeft(122).reduced(2, 1));
     targetLabel_.setBounds(bottom.reduced(5, 0));
 }
 
-void OutputStrip::sync(const motion::MotionEngineCore::Snapshot& snapshot, const BridgeEngine::SlotStatus& status)
+void OutputStrip::sync(const motion::MotionEngineCore::Snapshot& snapshot)
 {
     const auto& id = motion::ids::outputs[static_cast<std::size_t>(index_)];
     syncing_ = true;
@@ -512,38 +558,22 @@ void OutputStrip::sync(const motion::MotionEngineCore::Snapshot& snapshot, const
     if (sourceBox_.canAcceptExternalSync() && sourceBox_.getSelectedItemIndex() != sourceIndex)
         sourceBox_.setSelectedItemIndex(sourceIndex, juce::dontSendNotification);
 
-    minSlider_.setValue(plugin_.parameterValue(id.minimum), juce::dontSendNotification);
-    maxSlider_.setValue(plugin_.parameterValue(id.maximum), juce::dontSendNotification);
+    motion::ui::syncSlider(minSlider_, plugin_.parameterValue(id.minimum));
+    motion::ui::syncSlider(maxSlider_, plugin_.parameterValue(id.maximum));
 
     const int curveIndex = plugin_.parameterInt(id.curve);
     if (curveBox_.canAcceptExternalSync() && curveBox_.getSelectedItemIndex() != curveIndex)
         curveBox_.setSelectedItemIndex(curveIndex, juce::dontSendNotification);
 
-    smoothSlider_.setValue(plugin_.parameterValue(id.smoothing), juce::dontSendNotification);
+    motion::ui::syncSlider(smoothSlider_, plugin_.parameterValue(id.smoothing));
     syncing_ = false;
 
     currentValue_ = snapshot.outputs[static_cast<std::size_t>(index_)];
-    if (status.armed)
-    {
-        targetLabel_.setText("move target parameter...", juce::dontSendNotification);
-        targetLabel_.setColour(juce::Label::textColourId, warm);
-        mapButton_.setButtonText("ARMED");
-        mapButton_.setColour(juce::TextButton::buttonColourId, warm.withAlpha(0.28f));
-    }
-    else if (status.mapped)
-    {
-        targetLabel_.setText(toJuce(status.targetName), juce::dontSendNotification);
-        targetLabel_.setColour(juce::Label::textColourId, text);
-        mapButton_.setButtonText("MAP");
-        mapButton_.setColour(juce::TextButton::buttonColourId, accent.withAlpha(0.28f));
-    }
-    else
-    {
-        targetLabel_.setText("unmapped | aux: Motion " + juce::String(index_ + 1), juce::dontSendNotification);
-        targetLabel_.setColour(juce::Label::textColourId, muted);
-        mapButton_.setButtonText("MAP");
-        mapButton_.setColour(juce::TextButton::buttonColourId, accent.withAlpha(0.12f));
-    }
+    const auto bipolar=currentValue_*2.0f-1.0f;
+    targetLabel_.setText("CV " + juce::String(bipolar>=0?"+":"") + juce::String(bipolar,3)
+        + (plugin_.parameterValue(id.minimum)>plugin_.parameterValue(id.maximum)?"  INV":""),juce::dontSendNotification);
+    targetLabel_.setColour(juce::Label::textColourId, muted);
+
     repaint();
 }
 
@@ -558,7 +588,7 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
     titleLabel_.setFont(juce::FontOptions(24.0f, juce::Font::bold));
     titleLabel_.setColour(juce::Label::textColourId, text);
 
-    betaLabel_.setText("BETA", juce::dontSendNotification);
+    betaLabel_.setText("0.2.1", juce::dontSendNotification);
     betaLabel_.setFont(juce::FontOptions(10.5f, juce::Font::bold));
     betaLabel_.setJustificationType(juce::Justification::centred);
     betaLabel_.setColour(juce::Label::textColourId, accent);
@@ -574,7 +604,7 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
     modelInfoLabel_.setJustificationType(juce::Justification::centredRight);
     modelInfoLabel_.setMinimumHorizontalScale(0.72f);
 
-    outputsTitleLabel_.setText("MOTION OUTPUTS", juce::dontSendNotification);
+    outputsTitleLabel_.setText("MOTION OUTPUTS  ·  SAFE AUX ROUTING", juce::dontSendNotification);
     outputsTitleLabel_.setFont(juce::FontOptions(14.0f, juce::Font::bold));
     outputsTitleLabel_.setColour(juce::Label::textColourId, text);
 
@@ -671,35 +701,30 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
             selectZone(zoneBox_.getSelectedItemIndex());
     };
 
-    zoneRadiusSlider_.onDragStart = [this]
-    {
-        plugin_.beginParameterGesture(motion::ids::zones[static_cast<std::size_t>(selectedZone_)].radius);
-    };
-    zoneRadiusSlider_.onValueChange = [this]
-    {
-        if (!syncing_)
-            plugin_.setParameterFromGui(motion::ids::zones[static_cast<std::size_t>(selectedZone_)].radius, zoneRadiusSlider_.getValue());
-    };
-    zoneRadiusSlider_.onDragEnd = [this]
-    {
-        plugin_.endParameterGesture(motion::ids::zones[static_cast<std::size_t>(selectedZone_)].radius);
-    };
-    zoneFalloffSlider_.onDragStart = [this]
-    {
-        plugin_.beginParameterGesture(motion::ids::zones[static_cast<std::size_t>(selectedZone_)].falloff);
-    };
-    zoneFalloffSlider_.onValueChange = [this]
-    {
-        if (!syncing_)
-            plugin_.setParameterFromGui(motion::ids::zones[static_cast<std::size_t>(selectedZone_)].falloff, zoneFalloffSlider_.getValue());
-    };
-    zoneFalloffSlider_.onDragEnd = [this]
-    {
-        plugin_.endParameterGesture(motion::ids::zones[static_cast<std::size_t>(selectedZone_)].falloff);
-    };
-
-    hitButton_.onClick = [this] { plugin_.motionCore().triggerHit(); };
-    resetButton_.onClick = [this] { plugin_.motionCore().requestReset(); };
+    motion::ui::bind(plugin_,zoneRadiusSlider_,[this]{return motion::ids::zones[static_cast<std::size_t>(selectedZone_)].radius;},syncing_);
+    motion::ui::bind(plugin_,zoneFalloffSlider_,[this]{return motion::ids::zones[static_cast<std::size_t>(selectedZone_)].falloff;},syncing_);
+    hitButton_.onClick = [this] { plugin_.hitFromUi(); };
+    resetButton_.onClick = [this] { canvas_.cancelInteraction();canvas_.clearTrail();plugin_.resetMotionFromUi(); };
+    hitButton_.setWantsKeyboardFocus(false);resetButton_.setWantsKeyboardFocus(false);
+    hitButton_.setTooltip("Disturb/retrigger the current model. MIDI note-ons also HIT. Shortcuts: H or Enter outside value editing.");
+    resetButton_.setTooltip("Reset motion and audio analysis to a deterministic starting state. Keep all settings and output routes.");
+    modelBox_.setTitle("Motion model");constraintBox_.setTitle("Motion constraint");zoneBox_.setTitle("Selected zone");
+    modelBox_.setTooltip("Select a motion model. Embedded selectors also support keyboard navigation.");
+    constraintBox_.setTooltip("Project the output position/velocity without destroying the underlying motion.");
+    zoneRadiusSlider_.setTitle("Selected zone radius");zoneFalloffSlider_.setTitle("Selected zone falloff");
+    zoneRadiusSlider_.setTooltip("Zone radius in world units. Drag the zone ring for direct editing.");
+    zoneFalloffSlider_.setTooltip("Response falloff from the zone center to its boundary.");
+    timeSlider_.setTitle("Time scale");energySlider_.setTitle("Energy");dampingSlider_.setTitle("World drag");audioKickSlider_.setTitle("Audio kick");
+    timeSlider_.setTooltip("Simulation speed multiplier. The 240 Hz control clock remains fixed.");
+    energySlider_.setTooltip("Model drive and hit strength. Double-click restores the default.");
+    dampingSlider_.setTooltip("Global drag. Orbit/Lissajous retain their reference routes; drag damps physical deviations.");
+    audioKickSlider_.setTooltip("Input transients disturb the body. Set to zero for undisturbed deterministic routes.");
+    bridgeLabel_.setTooltip("Expose Motion 1-8 and select a lane as the source of Bitwig Audio Rate. Rectify off; then map the modulator. The bridge is optional and never maps targets.");
+    for(std::size_t i=0;i<motionSliders_.size();++i){
+        motionSliders_[i].setTitle("Model control "+juce::String(static_cast<int>(i+1)));
+        motion::ui::percent(motionSliders_[i]);
+        motionSliders_[i].setTooltip("Model-specific control percentage. Double-click restores the registered default.");
+    }
     canvas_.onZoneSelected = [this](int zone)
     {
         selectZone(zone);
@@ -724,7 +749,20 @@ MotionEngineEditor::MotionEngineEditor(MotionEnginePlugin& plugin)
 
 MotionEngineEditor::~MotionEngineEditor()
 {
-    stopTimer();
+    stopTimer();canvas_.cancelInteraction();
+    for(auto* slider:{&timeSlider_,&energySlider_,&dampingSlider_,&audioKickSlider_,&zoneRadiusSlider_,&zoneFalloffSlider_})motion::ui::detach(*slider);
+    for(auto& slider:motionSliders_)motion::ui::detach(slider);
+}
+void MotionEngineEditor::visibilityChanged(){if(!isVisible())canvas_.cancelInteraction();}
+void MotionEngineEditor::focusLost(FocusChangeType){if(!hasKeyboardFocus(true))canvas_.cancelInteraction();}
+void MotionEngineEditor::focusOfChildComponentChanged(FocusChangeType){if(!hasKeyboardFocus(true))canvas_.cancelInteraction();}
+bool MotionEngineEditor::keyPressed(const juce::KeyPress& key)
+{
+    if(motion::ui::hasTextEditor(*this))return false;
+    if(key==juce::KeyPress::escapeKey){canvas_.cancelInteraction();return true;}
+    if(key.getModifiers().isAnyModifierKeyDown())return false;
+    if(key.getKeyCode()=='H'||key.getKeyCode()==juce::KeyPress::returnKey){plugin_.hitFromUi();return true;}
+    return false;
 }
 
 void MotionEngineEditor::configureSlider(juce::Slider& slider, const juce::String& suffix)
@@ -750,20 +788,14 @@ void MotionEngineEditor::configureLabel(juce::Label& label, const juce::String& 
 
 void MotionEngineEditor::bindSlider(juce::Slider& slider, clap_id id)
 {
-    slider.onDragStart = [this, id] { plugin_.beginParameterGesture(id); };
-    slider.onValueChange = [this, &slider, id]
-    {
-        if (!syncing_)
-            plugin_.setParameterFromGui(id, slider.getValue());
-    };
-    slider.onDragEnd = [this, id] { plugin_.endParameterGesture(id); };
+    motion::ui::bind(plugin_,slider,[id]{return id;},syncing_);
 }
 
 void MotionEngineEditor::setOneShot(clap_id id, double value)
 {
-    plugin_.beginParameterGesture(id);
-    plugin_.setParameterFromGui(id, value);
-    plugin_.endParameterGesture(id);
+    plugin_.beginUiEdit(id);
+    plugin_.setUiValue(id, value);
+    plugin_.endUiEdit(id);
 }
 
 void MotionEngineEditor::paint(juce::Graphics& g)
@@ -833,10 +865,11 @@ void MotionEngineEditor::resized()
     auto zoneCell = zoneRow.removeFromLeft(140).reduced(2);
     zoneLabel_.setBounds(zoneCell.removeFromTop(17));
     zoneBox_.setBounds(zoneCell);
-    auto radiusCell = zoneRow.removeFromLeft(220).reduced(2);
+    const int zoneWidth=zoneRow.getWidth()/2;
+    auto radiusCell = zoneRow.removeFromLeft(zoneWidth).reduced(2);
     zoneRadiusLabel_.setBounds(radiusCell.removeFromTop(17));
     zoneRadiusSlider_.setBounds(radiusCell);
-    auto falloffCell = zoneRow.removeFromLeft(220).reduced(2);
+    auto falloffCell = zoneRow.reduced(2);
     zoneFalloffLabel_.setBounds(falloffCell.removeFromTop(17));
     zoneFalloffSlider_.setBounds(falloffCell);
 
@@ -869,12 +902,13 @@ void MotionEngineEditor::updateModelLabels()
 
 void MotionEngineEditor::selectZone(int zone)
 {
+    if(zone!=selectedZone_){motion::ui::finish(zoneRadiusSlider_);motion::ui::finish(zoneFalloffSlider_);}
     selectedZone_ = std::clamp(zone, 0, motion::kNumZones - 1);
     canvas_.setSelectedZone(selectedZone_);
     const auto& id = motion::ids::zones[static_cast<std::size_t>(selectedZone_)];
     syncing_ = true;
-    zoneRadiusSlider_.setValue(plugin_.parameterValue(id.radius), juce::dontSendNotification);
-    zoneFalloffSlider_.setValue(plugin_.parameterValue(id.falloff), juce::dontSendNotification);
+    motion::ui::syncSlider(zoneRadiusSlider_, plugin_.parameterValue(id.radius));
+    motion::ui::syncSlider(zoneFalloffSlider_, plugin_.parameterValue(id.falloff));
     syncing_ = false;
 }
 
@@ -890,58 +924,33 @@ void MotionEngineEditor::syncControls()
     if (constraintBox_.canAcceptExternalSync() && constraintBox_.getSelectedItemIndex() != constraintIndex)
         constraintBox_.setSelectedItemIndex(constraintIndex, juce::dontSendNotification);
 
-    timeSlider_.setValue(plugin_.parameterValue(motion::ids::timeScale), juce::dontSendNotification);
-    energySlider_.setValue(plugin_.parameterValue(motion::ids::energy), juce::dontSendNotification);
-    dampingSlider_.setValue(plugin_.parameterValue(motion::ids::globalDamping), juce::dontSendNotification);
-    audioKickSlider_.setValue(plugin_.parameterValue(motion::ids::audioKick), juce::dontSendNotification);
-    motionSliders_[0].setValue(plugin_.parameterValue(motion::ids::motionA), juce::dontSendNotification);
-    motionSliders_[1].setValue(plugin_.parameterValue(motion::ids::motionB), juce::dontSendNotification);
-    motionSliders_[2].setValue(plugin_.parameterValue(motion::ids::motionC), juce::dontSendNotification);
-    motionSliders_[3].setValue(plugin_.parameterValue(motion::ids::motionD), juce::dontSendNotification);
+    motion::ui::syncSlider(timeSlider_, plugin_.parameterValue(motion::ids::timeScale));
+    motion::ui::syncSlider(energySlider_, plugin_.parameterValue(motion::ids::energy));
+    motion::ui::syncSlider(dampingSlider_, plugin_.parameterValue(motion::ids::globalDamping));
+    motion::ui::syncSlider(audioKickSlider_, plugin_.parameterValue(motion::ids::audioKick));
+    motion::ui::syncSlider(motionSliders_[0], plugin_.parameterValue(motion::ids::motionA));
+    motion::ui::syncSlider(motionSliders_[1], plugin_.parameterValue(motion::ids::motionB));
+    motion::ui::syncSlider(motionSliders_[2], plugin_.parameterValue(motion::ids::motionC));
+    motion::ui::syncSlider(motionSliders_[3], plugin_.parameterValue(motion::ids::motionD));
 
     if (zoneBox_.canAcceptExternalSync() && zoneBox_.getSelectedItemIndex() != selectedZone_)
         zoneBox_.setSelectedItemIndex(selectedZone_, juce::dontSendNotification);
 
     const auto& zone = motion::ids::zones[static_cast<std::size_t>(selectedZone_)];
-    zoneRadiusSlider_.setValue(plugin_.parameterValue(zone.radius), juce::dontSendNotification);
-    zoneFalloffSlider_.setValue(plugin_.parameterValue(zone.falloff), juce::dontSendNotification);
+    motion::ui::syncSlider(zoneRadiusSlider_, plugin_.parameterValue(zone.radius));
+    motion::ui::syncSlider(zoneFalloffSlider_, plugin_.parameterValue(zone.falloff));
     syncing_ = false;
 }
 
-void MotionEngineEditor::timerCallback()
+void MotionEngineEditor::timerCallback() { refreshFromPlugin(); }
+void MotionEngineEditor::refreshFromPlugin()
 {
-    syncControls();
-    canvas_.tick();
-    const auto snapshot = plugin_.motionCore().getSnapshot();
-    const auto bridge = plugin_.bridge().getStatus();
-
-    int mappedCount = 0;
-    for (int i = 0; i < motion::kNumOutputs; ++i)
-    {
-        outputStrips_[static_cast<std::size_t>(i)]->sync(snapshot, bridge.slots[static_cast<std::size_t>(i)]);
-        if (bridge.slots[static_cast<std::size_t>(i)].mapped)
-            ++mappedCount;
-    }
-
-    const int model = plugin_.parameterInt(motion::ids::model);
-    if (model != displayedModel_)
-        updateModelLabels();
-
-    if (!bridge.bridgeSeen)
-    {
-        bridgeLabel_.setText("Bitwig bridge not seen | aux CV: Motion 1-8 available", juce::dontSendNotification);
-        bridgeLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffffb08c));
-    }
-    else if (mappedCount == 0)
-    {
-        bridgeLabel_.setText("Bitwig bridge online | no mapped outputs | aux CV: Motion 1-8", juce::dontSendNotification);
-        bridgeLabel_.setColour(juce::Label::textColourId, muted);
-    }
-    else
-    {
-        bridgeLabel_.setText(juce::String::formatted("Bitwig bridge | sent %.0f Hz | applied %.0f Hz | worst %.1f ms | aux CV: Motion 1-8",
-                                                     bridge.sentHz, bridge.appliedHz, bridge.worstGapMs),
-                             juce::dontSendNotification);
-        bridgeLabel_.setColour(juce::Label::textColourId, muted);
-    }
+    plugin_.serviceUiEdits();
+    syncControls();canvas_.tick();
+    const auto snapshot=plugin_.motionCore().getSnapshot();
+    for(auto& strip:outputStrips_)strip->sync(snapshot);
+    if(plugin_.parameterInt(motion::ids::model)!=displayedModel_)updateModelLabels();
+    bridgeLabel_.setText("Motion 1-8 -> Audio Rate / bridge optional\n"+toJuce(plugin_.midiActivityText()),juce::dontSendNotification);
+    bridgeLabel_.setColour(juce::Label::textColourId,muted);
+    if(!isShowing())canvas_.cancelInteraction();
 }

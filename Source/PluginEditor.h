@@ -35,10 +35,11 @@ public:
         return !popupOpen_ && juce::Time::getMillisecondCounterHiRes() >= syncHoldUntilMs_;
     }
 
-    void mouseDown(const juce::MouseEvent&) override
+    void mouseDown(const juce::MouseEvent& event) override
     {
-        showEmbeddedPopup();
+        if (event.mods.isLeftButtonDown()) showEmbeddedPopup();
     }
+    void showPopup() override { showEmbeddedPopup(); }
 
     void mouseUp(const juce::MouseEvent&) override {}
     void mouseDoubleClick(const juce::MouseEvent&) override {}
@@ -107,7 +108,7 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        const int model = plugin_.parameterInt(motion::ids::model);
+        const int model = plugin_.effectiveParameterInt(motion::ids::model);
         if (model != 0 && model != 6 && model != 7)
             return;
 
@@ -150,7 +151,7 @@ private:
 
     juce::Point<float> project(float x, float y) const
     {
-        switch (plugin_.parameterInt(motion::ids::constraint))
+        switch (plugin_.effectiveParameterInt(motion::ids::constraint))
         {
             case 1:
                 y = 0.0f;
@@ -273,9 +274,9 @@ private:
 
     void paintOrbit(juce::Graphics& g, juce::Rectangle<float> world)
     {
-        const double radiusControl = plugin_.parameterValue(motion::ids::motionA);
-        const double ellipticity = plugin_.parameterValue(motion::ids::motionB);
-        const double rotation = plugin_.parameterValue(motion::ids::motionC);
+        const double radiusControl = plugin_.effectiveParameterValue(motion::ids::motionA);
+        const double ellipticity = plugin_.effectiveParameterValue(motion::ids::motionB);
+        const double rotation = plugin_.effectiveParameterValue(motion::ids::motionC);
 
         constexpr int samples = 192;
         std::vector<juce::Point<float>> points;
@@ -294,9 +295,9 @@ private:
 
     void paintLissajous(juce::Graphics& g, juce::Rectangle<float> world)
     {
-        const double ratio = plugin_.parameterValue(motion::ids::motionB);
-        const double phaseOffset = plugin_.parameterValue(motion::ids::motionC);
-        const double rotation = plugin_.parameterValue(motion::ids::motionD);
+        const double ratio = plugin_.effectiveParameterValue(motion::ids::motionB);
+        const double phaseOffset = plugin_.effectiveParameterValue(motion::ids::motionC);
+        const double rotation = plugin_.effectiveParameterValue(motion::ids::motionD);
         const double livePhase = static_cast<double>(plugin_.motionCore().getSnapshot().trajectoryPhase);
 
         // Four base cycles centered around the body's current phase. With fractional
@@ -324,11 +325,11 @@ private:
 
     void paintImpulse(juce::Graphics& g, juce::Rectangle<float> world)
     {
-        const double forceControl = std::clamp(plugin_.parameterValue(motion::ids::motionA), 0.0, 1.0);
-        const double reboundControl = std::clamp(plugin_.parameterValue(motion::ids::motionB), 0.0, 1.0);
-        const double decayControl = std::clamp(plugin_.parameterValue(motion::ids::motionC), 0.0, 1.0);
-        const double direction = std::clamp(plugin_.parameterValue(motion::ids::motionD), 0.0, 1.0) * juce::MathConstants<double>::twoPi;
-        const double energy = std::clamp(plugin_.parameterValue(motion::ids::energy), 0.0, 2.5);
+        const double forceControl = std::clamp(plugin_.effectiveParameterValue(motion::ids::motionA), 0.0, 1.0);
+        const double reboundControl = std::clamp(plugin_.effectiveParameterValue(motion::ids::motionB), 0.0, 1.0);
+        const double decayControl = std::clamp(plugin_.effectiveParameterValue(motion::ids::motionC), 0.0, 1.0);
+        const double direction = std::clamp(plugin_.effectiveParameterValue(motion::ids::motionD), 0.0, 1.0) * juce::MathConstants<double>::twoPi;
+        const double energy = std::clamp(plugin_.effectiveParameterValue(motion::ids::energy), 0.0, 2.5);
         const double force = (1.5 + 6.8 * forceControl) * (0.6 + 0.4 * energy);
         const double rebound = 2.0 + reboundControl * 28.0;
         const double decay = 0.35 + decayControl * 6.0;
@@ -412,6 +413,9 @@ class MotionCanvas final : public juce::Component
 {
 public:
     explicit MotionCanvas(MotionEnginePlugin& plugin);
+    ~MotionCanvas() override;
+    void cancelInteraction();
+    void clearTrail() { trail_.clear(); repaint(); }
 
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
@@ -442,17 +446,19 @@ private:
     juce::Point<float> lastDragWorld_;
     double lastDragTimeMs_ = 0.0;
     juce::Point<float> flickVelocity_;
-    std::vector<juce::Point<float>> trail_;
+    std::vector<juce::Point<float>> trail_; // World coordinates survive resizing.
+    int trailModel_=-1, trailConstraint_=-1;
 };
 
 class OutputStrip final : public juce::Component
 {
 public:
     OutputStrip(MotionEnginePlugin& plugin, int index);
+    ~OutputStrip() override;
 
     void paint(juce::Graphics&) override;
     void resized() override;
-    void sync(const motion::MotionEngineCore::Snapshot& snapshot, const BridgeEngine::SlotStatus& status);
+    void sync(const motion::MotionEngineCore::Snapshot& snapshot);
 
 private:
     void configureCompactSlider(juce::Slider& slider);
@@ -470,8 +476,8 @@ private:
     juce::Slider maxSlider_;
     StableComboBox curveBox_;
     juce::Slider smoothSlider_;
-    juce::TextButton mapButton_ { "MAP" };
-    juce::TextButton clearButton_ { "X" };
+    juce::Label auxLabel_;
+    juce::TextButton invertButton_ { "FLIP" };
     juce::Label targetLabel_;
 };
 
@@ -481,6 +487,11 @@ class MotionEngineEditor final : public juce::Component,
 public:
     explicit MotionEngineEditor(MotionEnginePlugin& plugin);
     ~MotionEngineEditor() override;
+    void visibilityChanged() override;
+    void focusLost(FocusChangeType) override;
+    void focusOfChildComponentChanged(FocusChangeType) override;
+    bool keyPressed(const juce::KeyPress&) override;
+    void refreshFromPlugin();
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -501,6 +512,7 @@ private:
     int selectedZone_ = 0;
     int displayedModel_ = -1;
 
+    juce::TooltipWindow tooltips_ { this, 500 };
     juce::Label titleLabel_;
     juce::Label betaLabel_;
     juce::Label subtitleLabel_;

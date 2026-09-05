@@ -145,12 +145,13 @@ MotionEngineCore::MotionEngineCore()
 
 void MotionEngineCore::prepare(double sampleRate) noexcept
 {
-    sampleRate_ = std::max(1.0, sampleRate);
+    sampleRate_ = std::isfinite(sampleRate) ? std::clamp(sampleRate, 1.0, 768000.0) : 48000.0;
     resetNow();
 }
 
 void MotionEngineCore::resetNow() noexcept
 {
+    randomState_ = 0x4d6f7469u;
     lastModel_ = -1;
     accumulator_ = 0.0;
     elapsed_ = 0.0;
@@ -163,10 +164,10 @@ void MotionEngineCore::resetNow() noexcept
     previousAudioEnvelope_ = 0.0;
     impactEnvelope_ = 0.0;
     smoothedOutputs_.fill(0.5);
-    throwPending_.store(false, std::memory_order_relaxed);
-    dragging_.store(false, std::memory_order_relaxed);
+    audioDrag_ = {};
+    DragMessage ignored;
+    readDrag(ignored, consumedDragRevision_);
     hitPending_.store(false, std::memory_order_relaxed);
-    resetPending_.store(false, std::memory_order_relaxed);
     resetForModel(parameters_.model);
     publishSnapshot(1.0 / kSimulationHz);
 }
@@ -186,25 +187,81 @@ void MotionEngineCore::triggerHit() noexcept
     hitPending_.store(true, std::memory_order_release);
 }
 
+void MotionEngineCore::setParameters(const Parameters& input) noexcept
+{
+    parameters_ = input;
+    const Parameters defaults;
+    const auto clean = [](double x, double lo, double hi, double fallback) {
+        return std::isfinite(x) ? std::clamp(x, lo, hi) : fallback;
+    };
+    auto& p = parameters_;
+    p.model = std::clamp(p.model, 0, 9);
+    p.constraint = std::clamp(p.constraint, 0, 4);
+    p.timeScale = clean(p.timeScale, 0.1, 3.0, defaults.timeScale);
+    p.energy = clean(p.energy, 0.0, 2.0, defaults.energy);
+    p.globalDamping = clean(p.globalDamping, 0.0, 2.0, defaults.globalDamping);
+    p.audioKick = clean(p.audioKick, 0.0, 2.0, defaults.audioKick);
+    for (std::size_t i=0; i<p.motion.size(); ++i)
+        p.motion[i] = clean(p.motion[i], 0.0, 1.0, defaults.motion[i]);
+    for (std::size_t i=0; i<p.zones.size(); ++i)
+    {
+        auto& z=p.zones[i]; const auto& d=defaults.zones[i];
+        z.x=clean(z.x,-1,1,d.x); z.y=clean(z.y,-1,1,d.y);
+        z.radius=clean(z.radius,0.08,1.5,d.radius); z.falloff=clean(z.falloff,0.2,4,d.falloff);
+    }
+    for (auto& o:p.outputs)
+    {
+        o.source=std::clamp(o.source,0,14); o.curve=std::clamp(o.curve,0,4);
+        o.minimum=clean(o.minimum,0,1,0); o.maximum=clean(o.maximum,0,1,1);
+        o.smoothingMs=clean(o.smoothingMs,0,500,12);
+    }
+}
+
+void MotionEngineCore::publishDrag(const DragMessage& message) noexcept
+{
+    // Sequential consistency gives a total order across the sequence and fields.
+    // All payload fields are atomic, so even a failed read has no C++ data race.
+    dragRevision_.fetch_add(1);
+    dragValues_[0].store(message.x); dragValues_[1].store(message.y);
+    dragValues_[2].store(message.vx); dragValues_[3].store(message.vy);
+    dragHeld_.store(message.held);
+    dragRevision_.fetch_add(1);
+}
+
+bool MotionEngineCore::readDrag(DragMessage& message, std::uint64_t& revision) const noexcept
+{
+    for (int attempt=0; attempt<3; ++attempt)
+    {
+        const auto before=dragRevision_.load();
+        if ((before & 1u) != 0) continue;
+        DragMessage next { dragValues_[0].load(), dragValues_[1].load(),
+                           dragValues_[2].load(), dragValues_[3].load(), dragHeld_.load() };
+        if (before == dragRevision_.load()) { message=next; revision=before; return true; }
+    }
+    return false; // Never wait for the GUI on the real-time thread.
+}
+
 void MotionEngineCore::beginDrag(float x, float y) noexcept
 {
-    dragX_.store(clamp(x, -1.0f, 1.0f), std::memory_order_relaxed);
-    dragY_.store(clamp(y, -1.0f, 1.0f), std::memory_order_relaxed);
-    dragging_.store(true, std::memory_order_release);
+    if (!std::isfinite(x) || !std::isfinite(y)) return;
+    guiDrag_ = { clamp(x,-1.0f,1.0f), clamp(y,-1.0f,1.0f), 0, 0, true };
+    publishDrag(guiDrag_);
 }
 
 void MotionEngineCore::dragTo(float x, float y) noexcept
 {
-    dragX_.store(clamp(x, -1.0f, 1.0f), std::memory_order_relaxed);
-    dragY_.store(clamp(y, -1.0f, 1.0f), std::memory_order_relaxed);
+    if (!guiDrag_.held || !std::isfinite(x) || !std::isfinite(y)) return;
+    guiDrag_.x=clamp(x,-1.0f,1.0f); guiDrag_.y=clamp(y,-1.0f,1.0f);
+    publishDrag(guiDrag_);
 }
 
 void MotionEngineCore::endDrag(float velocityX, float velocityY) noexcept
 {
-    throwVX_.store(clamp(velocityX, -8.0f, 8.0f), std::memory_order_relaxed);
-    throwVY_.store(clamp(velocityY, -8.0f, 8.0f), std::memory_order_relaxed);
-    throwPending_.store(true, std::memory_order_release);
-    dragging_.store(false, std::memory_order_release);
+    if (!guiDrag_.held) return;
+    guiDrag_.vx=std::isfinite(velocityX)?clamp(velocityX,-8.0f,8.0f):0.0f;
+    guiDrag_.vy=std::isfinite(velocityY)?clamp(velocityY,-8.0f,8.0f):0.0f;
+    guiDrag_.held=false;
+    publishDrag(guiDrag_);
 }
 
 std::array<std::string_view, 4> MotionEngineCore::controlNamesForModel(int model) noexcept
@@ -230,8 +287,10 @@ void MotionEngineCore::process(double blockSeconds, const AudioAnalysis& audio) 
     if (resetPending_.exchange(false, std::memory_order_acq_rel))
         resetNow();
 
-    analyseAudio(audio);
-    accumulator_ += std::max(0.0, blockSeconds);
+    if (!std::isfinite(blockSeconds) || blockSeconds < 0.0) return;
+    blockSeconds = std::min(blockSeconds, 0.5); // Bounded catch-up for non-host callers.
+    analyseAudio(audio, blockSeconds);
+    accumulator_ += blockSeconds;
     constexpr double fixedStep = 1.0 / kSimulationHz;
     int safety = 0;
 
@@ -246,34 +305,36 @@ void MotionEngineCore::process(double blockSeconds, const AudioAnalysis& audio) 
     publishSnapshot(blockSeconds);
 }
 
-void MotionEngineCore::analyseAudio(const AudioAnalysis& input) noexcept
+void MotionEngineCore::analyseAudio(const AudioAnalysis& input, double seconds) noexcept
 {
+    const auto retention=[seconds](double perTick) { return std::pow(perTick, seconds*kSimulationHz); };
+    const auto level=[](double x) { return std::isfinite(x)?std::clamp(x,0.0,1.0e6):0.0; };
     if (input.channels <= 0)
     {
-        audioEnvelope_ *= 0.92;
-        audioBalance_ *= 0.9;
-        transientEnvelope_ *= 0.78;
+        audioEnvelope_ *= retention(0.92);
+        audioBalance_ *= retention(0.9);
+        transientEnvelope_ *= retention(0.78);
         previousAudioEnvelope_ = audioEnvelope_;
         return;
     }
 
-    const double rms = std::max(0.0, input.rms);
-    const double attack = rms > audioEnvelope_ ? 0.55 : 0.08;
+    const double rms = level(input.rms);
+    const double attack = 1.0 - retention(rms > audioEnvelope_ ? 0.45 : 0.92);
     audioEnvelope_ += (rms - audioEnvelope_) * attack;
 
     if (input.channels > 1)
     {
-        const double total = input.leftRms + input.rightRms + 1.0e-9;
-        const double balance = (input.rightRms - input.leftRms) / total;
-        audioBalance_ += (balance - audioBalance_) * 0.18;
+        const double total = level(input.leftRms) + level(input.rightRms) + 1.0e-9;
+        const double balance = (level(input.rightRms) - level(input.leftRms)) / total;
+        audioBalance_ += (balance - audioBalance_) * (1.0-retention(0.82));
     }
     else
     {
-        audioBalance_ *= 0.82;
+        audioBalance_ *= retention(0.82);
     }
 
     const double rise = std::max(0.0, audioEnvelope_ - previousAudioEnvelope_);
-    transientEnvelope_ = std::max(transientEnvelope_ * 0.72, clamp(rise * 18.0, 0.0, 1.0));
+    transientEnvelope_ = std::max(transientEnvelope_ * retention(0.72), clamp(rise * 18.0, 0.0, 1.0));
     previousAudioEnvelope_ = audioEnvelope_;
 }
 
@@ -382,10 +443,19 @@ void MotionEngineCore::step(double dt) noexcept
     const double d = clampUnit(parameters_.motion[3]);
     const double energy = clamp(parameters_.energy, 0.0, 2.5);
 
-    if (dragging_.load(std::memory_order_acquire))
+    DragMessage latest;
+    std::uint64_t revision=consumedDragRevision_;
+    const bool fresh=readDrag(latest, revision) && revision!=consumedDragRevision_;
+    if (fresh)
     {
-        x_ = dragX_.load(std::memory_order_relaxed);
-        y_ = dragY_.load(std::memory_order_relaxed);
+        audioDrag_=latest;
+        consumedDragRevision_=revision;
+        x_=audioDrag_.x; y_=audioDrag_.y;
+    }
+    if (audioDrag_.held)
+    {
+        x_ = audioDrag_.x;
+        y_ = audioDrag_.y;
         vx_ = vy_ = 0.0;
 
         if (model == 0)
@@ -414,10 +484,10 @@ void MotionEngineCore::step(double dt) noexcept
         return;
     }
 
-    if (throwPending_.exchange(false, std::memory_order_acq_rel))
+    if (fresh && !audioDrag_.held)
     {
-        const double throwVX = throwVX_.load(std::memory_order_relaxed);
-        const double throwVY = throwVY_.load(std::memory_order_relaxed);
+        const double throwVX = audioDrag_.vx;
+        const double throwVY = audioDrag_.vy;
 
         if (model == 0)
         {
