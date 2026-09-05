@@ -8,17 +8,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(FetchContent)
 include(CTest)
 
-# Pin the exact null-clap revision validated for raw MIDI ports, process context,
-# bounds-safe event handling, writable-parameter state restore, and physical-pixel
-# GUI sizing on scaled Win32 hosts.
+# Immutable shared-framework revision: backpressure-safe automation, bounded
+# transactional state loading, numeric/event validation, and Release-active tests.
+# Keep Motion Engine's safe aux-output routing and application DSP independent.
 FetchContent_Declare(
     null_clap
     GIT_REPOSITORY https://github.com/001null100/null-clap.git
-    GIT_TAG 8612a19fbe7fbe81b249c22e1593da18bb998b97
+    GIT_TAG 9de3106360f324ee4b08906595c54a3e138f6cb7
     GIT_SHALLOW FALSE
 )
 set(NULLCLAP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(NULLCLAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+# A consumer build should test the exact host plumbing it ships, not just the DSP.
+set(NULLCLAP_BUILD_TESTS ${BUILD_TESTING} CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(null_clap)
 
 # JUCE is retained only as the drawing/window toolkit. Motion Engine no longer
