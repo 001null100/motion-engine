@@ -16,14 +16,14 @@ import com.bitwig.extension.controller.api.ControllerHost;
 /**
  * Safe companion for Motion Engine.
  *
- * The v0.2 bridge used LastClickedParameter objects as durable arbitrary-target
- * references. Bitwig intentionally exposes every LastClickedParameter as a
- * user-facing controller mapping target. That means other controller scripts can
- * bind to or otherwise interact with the same proxy that Motion Engine is using
- * internally, and the proxy can also capture Motion Engine's own parameters.
+ * The v0.2 bridge used last-clicked parameter proxies as durable arbitrary-target
+ * references. Bitwig intentionally exposes each such proxy as a user-facing
+ * controller mapping target. That means other controller scripts can bind to or
+ * otherwise interact with the same proxy that Motion Engine is using internally,
+ * and the proxy can also capture Motion Engine's own parameters.
  * There is no public API flag that makes those proxies private.
  *
- * v0.3 therefore creates no LastClickedParameter objects at all. The extension is
+ * v0.3 therefore creates no arbitrary-target proxies at all. The extension is
  * only a localhost heartbeat/diagnostic companion. Modulation is routed through
  * Motion Engine's eight CLAP auxiliary outputs and Bitwig's Audio Rate modulator.
  */
