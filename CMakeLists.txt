@@ -9,12 +9,12 @@ include(FetchContent)
 include(CTest)
 
 # Pin the exact null-clap revision validated for raw MIDI ports, process context,
-# bounds-safe event handling, writable-parameter state restore, and physical-pixel
-# GUI sizing on scaled Win32 hosts.
+# bounds-safe event handling, writable-parameter state restore, physical-pixel
+# GUI sizing on scaled Win32 hosts, and host timer-support for the Linux/X11 editor.
 FetchContent_Declare(
     null_clap
     GIT_REPOSITORY https://github.com/001null100/null-clap.git
-    GIT_TAG 8612a19fbe7fbe81b249c22e1593da18bb998b97
+    GIT_TAG 1245cdfb1d3d34c03ab5beaec9456ef8128126af
     GIT_SHALLOW FALSE
 )
 set(NULLCLAP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

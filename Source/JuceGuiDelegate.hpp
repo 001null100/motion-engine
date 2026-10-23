@@ -30,6 +30,7 @@ public:
     bool adjustSize(std::uint32_t& width, std::uint32_t& height) noexcept override;
     bool setSize(std::uint32_t width, std::uint32_t height) noexcept override;
     bool setParent(const clap_window_t& window) noexcept override;
+    void onTimer(clap_id timerId) noexcept override;
 
 private:
     void applyLogicalEditorSize() noexcept;
@@ -37,5 +38,6 @@ private:
     MotionEnginePlugin& plugin_;
     std::unique_ptr<juce::ScopedJuceInitialiser_GUI> juceInitialiser_;
     std::unique_ptr<MotionEngineEditor> editor_;
+    clap_id eventLoopTimer_ = CLAP_INVALID_ID;
     nullclap::PhysicalPixelGuiSizing sizing_ { 1320, 820, 1120, 700, 1800, 1100 };
 };

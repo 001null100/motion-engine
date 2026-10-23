@@ -3,7 +3,18 @@
 
 #include <clap/ext/gui.h>
 
+#include <cstdint>
 #include <cstring>
+
+#if JUCE_LINUX
+// JUCE implements this in juce_Messaging_linux.cpp without exposing it in a public
+// header. It is the same entry point JUCE's own plug-in wrappers use to pump the
+// message queue and X11 events from a host-owned main thread.
+namespace juce::detail
+{
+bool dispatchNextMessageOnSystemQueue(bool returnIfNoPendingMessages);
+}
+#endif
 
 JuceGuiDelegate::JuceGuiDelegate(MotionEnginePlugin& plugin) noexcept
     : plugin_(plugin)
@@ -19,6 +30,8 @@ bool JuceGuiDelegate::isApiSupported(const char* api, bool floating) const noexc
 {
 #if JUCE_WINDOWS
     return !floating && api != nullptr && std::strcmp(api, CLAP_WINDOW_API_WIN32) == 0;
+#elif JUCE_LINUX
+    return !floating && api != nullptr && std::strcmp(api, CLAP_WINDOW_API_X11) == 0;
 #else
     (void)api;
     (void)floating;
@@ -30,6 +43,8 @@ const char* JuceGuiDelegate::preferredApi() const noexcept
 {
 #if JUCE_WINDOWS
     return CLAP_WINDOW_API_WIN32;
+#elif JUCE_LINUX
+    return CLAP_WINDOW_API_X11;
 #else
     return nullptr;
 #endif
@@ -43,6 +58,17 @@ bool JuceGuiDelegate::create(const char* api, bool floating) noexcept
     try
     {
         juceInitialiser_ = std::make_unique<juce::ScopedJuceInitialiser_GUI>();
+#if JUCE_LINUX
+        // There is no JUCE message thread inside an X11 host. Without host timer
+        // ticks the editor would never receive paint, input or juce::Timer messages.
+        if (!plugin_.registerHostTimer(16, eventLoopTimer_))
+        {
+            juceInitialiser_.reset();
+            return false;
+        }
+        if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+            sizing_.setScale(display->scale);
+#endif
         editor_ = std::make_unique<MotionEngineEditor>(plugin_);
         applyLogicalEditorSize();
         editor_->setVisible(false);
@@ -51,6 +77,8 @@ bool JuceGuiDelegate::create(const char* api, bool floating) noexcept
     catch (...)
     {
         editor_.reset();
+        plugin_.unregisterHostTimer(eventLoopTimer_);
+        eventLoopTimer_ = CLAP_INVALID_ID;
         juceInitialiser_.reset();
         return false;
     }
@@ -65,11 +93,23 @@ void JuceGuiDelegate::destroy() noexcept
             editor_->removeFromDesktop();
         editor_.reset();
     }
+    if (eventLoopTimer_ != CLAP_INVALID_ID)
+    {
+        plugin_.unregisterHostTimer(eventLoopTimer_);
+        eventLoopTimer_ = CLAP_INVALID_ID;
+    }
     juceInitialiser_.reset();
 }
 
 bool JuceGuiDelegate::setScale(double scale) noexcept
 {
+#if JUCE_LINUX
+    // JUCE's X11 peer applies its own display scale (Xft.dpi / GDK_SCALE). Ignore
+    // the host's value so the logical/physical conversion matches the peer exactly;
+    // CLAP lets X11 plug-ins query the scale themselves.
+    (void)scale;
+    return false;
+#else
     // CLAP Win32 sizes are physical pixels while JUCE component bounds are logical.
     // Preserve the logical editor size and report/accept scaled physical sizes at
     // the host boundary so Windows DPI scaling is applied exactly once.
@@ -77,6 +117,7 @@ bool JuceGuiDelegate::setScale(double scale) noexcept
         return false;
     applyLogicalEditorSize();
     return true;
+#endif
 }
 
 bool JuceGuiDelegate::show() noexcept
@@ -142,9 +183,42 @@ bool JuceGuiDelegate::setParent(const clap_window_t& window) noexcept
     editor_->addToDesktop(0, window.win32);
     applyLogicalEditorSize();
     return editor_->isOnDesktop();
+#elif JUCE_LINUX
+    if (editor_ == nullptr || window.api == nullptr || window.x11 == 0
+        || std::strcmp(window.api, CLAP_WINDOW_API_X11) != 0)
+        return false;
+
+    if (editor_->isOnDesktop())
+        editor_->removeFromDesktop();
+
+    editor_->setTopLeftPosition(0, 0);
+    editor_->addToDesktop(0, reinterpret_cast<void*>(static_cast<std::uintptr_t>(window.x11)));
+    if (auto* peer = editor_->getPeer())
+    {
+        const auto previousWidth = sizing_.physicalWidth();
+        const auto previousHeight = sizing_.physicalHeight();
+        sizing_.setScale(peer->getPlatformScaleFactor());
+        if (sizing_.physicalWidth() != previousWidth || sizing_.physicalHeight() != previousHeight)
+            plugin_.requestGuiResize(sizing_.physicalWidth(), sizing_.physicalHeight());
+    }
+    applyLogicalEditorSize();
+    return editor_->isOnDesktop();
 #else
     (void)window;
     return false;
+#endif
+}
+
+void JuceGuiDelegate::onTimer(clap_id timerId) noexcept
+{
+#if JUCE_LINUX
+    if (timerId != eventLoopTimer_ || juceInitialiser_ == nullptr)
+        return;
+    while (juce::detail::dispatchNextMessageOnSystemQueue(true))
+    {
+    }
+#else
+    (void)timerId;
 #endif
 }
 
