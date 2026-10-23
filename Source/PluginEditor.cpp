@@ -862,7 +862,7 @@ void MotionEngineEditor::updateModelLabels()
     const auto descriptions = motion::MotionEngineCore::modelDescriptions();
     const auto models = motion::MotionEngineCore::modelNames();
     const int safeModel = std::clamp(model, 0, static_cast<int>(models.size()) - 1);
-    modelInfoLabel_.setText(toJuce(models[static_cast<std::size_t>(safeModel)]) + "  ·  "
+    modelInfoLabel_.setText(toJuce(models[static_cast<std::size_t>(safeModel)]) + juce::String::fromUTF8("  ·  ")
                             + toJuce(descriptions[static_cast<std::size_t>(safeModel)]),
                             juce::dontSendNotification);
 }
